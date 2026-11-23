@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Copy, Check, Code2, Globe, Link as LinkIcon } from 'lucide-react';
+import { X, Copy, Check, Code2, Globe, Link as LinkIcon, Download } from 'lucide-react';
 import type { SpaceRecord } from '../types/space.ts';
 
 interface ShareEmbedModalProps {
@@ -19,7 +19,16 @@ export const ShareEmbedModal: React.FC<ShareEmbedModalProps> = ({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const shareUrl = `${origin}/?space=${encodeURIComponent(space.id)}`;
   const iframeCode = `<iframe\n  src="${shareUrl}&embed=1"\n  width="100%"\n  height="540"\n  style="border:0;border-radius:8px;"\n  allowfullscreen\n></iframe>`;
-  const sdkCode = `import { SpaceKit } from '@spacekit/sdk';\n\nconst space = new SpaceKit.Space({\n  spaceId: '${space.id}',\n  apiKey: 'YOUR_SPACEKIT_API_KEY',\n  endpoint: '${origin}/api/v1'\n});\nawait space.startViewer({ containerId: 'spacekit-3d' });`;
+  const sdkCode = `// Install: npm install ${origin}/sdk/spacekit-sdk-1.0.0.tgz
+// Or ESM:  import { SpaceKit } from '${origin}/sdk/spacekit-sdk.js';
+import { SpaceKit } from '@spacekit/sdk';
+
+const space = new SpaceKit.Space({
+  spaceId: '${space.id}',
+  apiKey: 'YOUR_SPACEKIT_API_KEY',
+  endpoint: '${origin}/api/v1'
+});
+await space.startViewer({ containerId: 'spacekit-3d', mode: '3d', showAnnotations: true });`;
 
   const copy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -115,18 +124,28 @@ export const ShareEmbedModal: React.FC<ShareEmbedModalProps> = ({
                 <Code2 className="w-3.5 h-3.5 text-slate-500" />
                 <span>SpaceKit JS SDK</span>
               </span>
-              <button
-                type="button"
-                onClick={() => copy(sdkCode, 'sdk')}
-                className="text-slate-600 hover:text-[#1f242c] font-medium flex items-center gap-1"
-              >
-                {copied === 'sdk' ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5" />
-                )}
-                <span>{copied === 'sdk' ? 'Copied' : 'Copy'}</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <a
+                  href="/sdk/spacekit-sdk-1.0.0.tgz"
+                  download="spacekit-sdk-1.0.0.tgz"
+                  className="text-slate-600 hover:text-[#1f242c] font-medium flex items-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .tgz</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => copy(sdkCode, 'sdk')}
+                  className="text-slate-600 hover:text-[#1f242c] font-medium flex items-center gap-1"
+                >
+                  {copied === 'sdk' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copied === 'sdk' ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
             </div>
             <pre className="bg-[#1a1f26] text-slate-100 rounded-md p-3 font-mono text-[11px] overflow-x-auto">
               {sdkCode}

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build:sdk": "tsc -p packages/spacekit-sdk/tsconfig.json && mkdir -p packages/spacekit-sdk/release && npm pack ./packages/spacekit-sdk --pack-destination packages/spacekit-sdk/release",
+    "build": "npm run build:sdk && vite build",
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

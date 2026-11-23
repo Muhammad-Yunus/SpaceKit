@@ -207,6 +207,60 @@ async function startServer() {
   app.use(express.json({ limit: '16mb' }));
   app.use(express.urlencoded({ extended: true, limit: '16mb' }));
 
+  // Enable CORS for external @spacekit/sdk browser/app integrations
+  const allowPublicSdkCors: express.RequestHandler = (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, x-spacekit-key'
+    );
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    return next();
+  };
+  app.use('/api/v1', allowPublicSdkCors);
+  app.use('/sdk', allowPublicSdkCors);
+  app.use('/api/sdk', allowPublicSdkCors);
+
+  // ---------------- DOWNLOADABLE @spacekit/sdk DISTRIBUTION ----------------
+  const sdkRoot = path.resolve(process.cwd(), 'packages/spacekit-sdk');
+  app.get('/sdk/spacekit-sdk.js', (_req, res) => {
+    const jsPath = path.join(sdkRoot, 'dist/index.js');
+    if (!fs.existsSync(jsPath)) {
+      return res.status(404).type('text/plain').send('SDK bundle not built yet.');
+    }
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    return res.sendFile(jsPath);
+  });
+
+  app.get('/sdk/spacekit-sdk.d.ts', (_req, res) => {
+    const dtsPath = path.join(sdkRoot, 'dist/index.d.ts');
+    if (!fs.existsSync(dtsPath)) {
+      return res.status(404).type('text/plain').send('SDK types not built yet.');
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    return res.sendFile(dtsPath);
+  });
+
+  const serveSdkTarball: express.RequestHandler = (_req, res) => {
+    const tgzPath = path.join(sdkRoot, 'release/spacekit-sdk-1.0.0.tgz');
+    if (!fs.existsSync(tgzPath)) {
+      return res.status(404).json({ error: 'SDK tarball package not found.' });
+    }
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="spacekit-sdk-1.0.0.tgz"'
+    );
+    return res.sendFile(tgzPath);
+  };
+  app.get('/sdk/spacekit-sdk-1.0.0.tgz', serveSdkTarball);
+  app.get('/api/sdk/download', serveSdkTarball);
+
   // Health & DB status endpoint
   app.get('/api/health', async (_req, res) => {
     const dbConfigured = isDatabaseConfigured();

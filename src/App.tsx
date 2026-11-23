@@ -176,12 +176,16 @@ export default function App() {
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [pickedFloorPoint, setPickedFloorPoint] = useState<{ x: number; z: number } | null>(null);
 
-  // Public embed mode (?space=<id>&embed=1)
+  // Public embed mode (?space=<id>&embed=1) & @spacekit/sdk bridge (?sdk=1)
   const initialQuery = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     return {
       spaceId: params.get('space')?.trim() || null,
       isEmbed: params.get('embed') === '1',
+      isSdk: params.get('sdk') === '1',
+      sid: params.get('sid')?.trim() || null,
+      mode: params.get('mode') === '2d' ? ('2d' as const) : ('3d' as const),
+      annotations: params.get('annotations') !== '0',
     };
   }, []);
   const deepLinkHandledRef = useRef(false);
@@ -212,6 +216,10 @@ export default function App() {
     entities: [],
   });
   const [embedSelectedEntityId, setEmbedSelectedEntityId] = useState<string | null>(null);
+  const [embedMode, setEmbedMode] = useState<'2d' | '3d'>(initialQuery.mode);
+  const [embedAnnotations, setEmbedAnnotations] = useState<boolean>(
+    initialQuery.annotations
+  );
 
   // Global notice banner
   const [notice, setNotice] = useState<{
@@ -265,32 +273,123 @@ export default function App() {
   useEffect(() => {
     if (!initialQuery.isEmbed || !initialQuery.spaceId) return;
     let cancelled = false;
+    let hydratedBySdk = false;
     setPublicEmbed((prev) => ({ ...prev, loading: true, error: null }));
-    api
-      .getPublicSpace(initialQuery.spaceId)
-      .then((res) => {
-        if (cancelled) return;
+
+    const onSdkMessage = (ev: MessageEvent) => {
+      const msg = ev.data as Record<string, unknown> | null;
+      if (!msg || typeof msg !== 'object') return;
+      if (initialQuery.sid && msg.sid && msg.sid !== initialQuery.sid) return;
+
+      if (msg.type === 'spacekit:hydrate' && msg.space && typeof msg.space === 'object') {
+        hydratedBySdk = true;
+        const incomingSpace = msg.space as {
+          id: string;
+          name: string;
+          description?: string;
+          status?: string;
+          sqft?: number;
+          data: SpaceData;
+          updatedAt?: string;
+        };
+        const incomingEntities = Array.isArray(msg.entities)
+          ? (msg.entities as SpatialEntityRecord[])
+          : [];
+        const opts = (msg.options && typeof msg.options === 'object'
+          ? msg.options
+          : {}) as { mode?: '2d' | '3d'; showAnnotations?: boolean };
+        if (opts.mode === '2d' || opts.mode === '3d') {
+          setEmbedMode(opts.mode);
+        }
+        if (typeof opts.showAnnotations === 'boolean') {
+          setEmbedAnnotations(opts.showAnnotations);
+        }
         setPublicEmbed({
           loading: false,
           error: null,
-          space: res.space,
-          entities: res.entities,
+          space: {
+            id: incomingSpace.id,
+            name: incomingSpace.name,
+            description: incomingSpace.description || '',
+            status: incomingSpace.status || 'live',
+            tags: [],
+            sqft: incomingSpace.sqft || 0,
+            views: 0,
+            complexity: 1,
+            address: null,
+            latitude: null,
+            longitude: null,
+            data: incomingSpace.data,
+            updatedAt: incomingSpace.updatedAt || new Date().toISOString(),
+          },
+          entities: incomingEntities,
         });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPublicEmbed({
-          loading: false,
-          error:
-            err instanceof Error
-              ? err.message
-              : 'This public 3D space is unavailable or set to Draft.',
-          space: null,
-          entities: [],
-        });
-      });
+      } else if (msg.type === 'spacekit:setOptions') {
+        if (msg.mode === '2d' || msg.mode === '3d') {
+          setEmbedMode(msg.mode);
+        }
+        if (typeof msg.showAnnotations === 'boolean') {
+          setEmbedAnnotations(msg.showAnnotations);
+        }
+      } else if (msg.type === 'spacekit:setEntities' && Array.isArray(msg.entities)) {
+        setPublicEmbed((prev) => ({
+          ...prev,
+          entities: msg.entities as SpatialEntityRecord[],
+        }));
+      } else if (msg.type === 'spacekit:selectEntity') {
+        setEmbedSelectedEntityId(
+          typeof msg.entityId === 'string' ? msg.entityId : null
+        );
+      }
+    };
+
+    window.addEventListener('message', onSdkMessage);
+
+    if (initialQuery.isSdk && window.parent && window.parent !== window) {
+      window.parent.postMessage(
+        {
+          type: 'spacekit:ready',
+          sid: initialQuery.sid,
+          spaceId: initialQuery.spaceId,
+        },
+        '*'
+      );
+    }
+
+    const fetchTimer = window.setTimeout(
+      () => {
+        if (cancelled || hydratedBySdk) return;
+        api
+          .getPublicSpace(initialQuery.spaceId!)
+          .then((res) => {
+            if (cancelled || hydratedBySdk) return;
+            setPublicEmbed({
+              loading: false,
+              error: null,
+              space: res.space,
+              entities: res.entities,
+            });
+          })
+          .catch((err) => {
+            if (cancelled || hydratedBySdk) return;
+            setPublicEmbed({
+              loading: false,
+              error:
+                err instanceof Error
+                  ? err.message
+                  : 'This public 3D space is unavailable or set to Draft.',
+              space: null,
+              entities: [],
+            });
+          });
+      },
+      initialQuery.isSdk ? 900 : 0
+    );
+
     return () => {
       cancelled = true;
+      window.clearTimeout(fetchTimer);
+      window.removeEventListener('message', onSdkMessage);
     };
   }, [initialQuery]);
 
@@ -651,7 +750,21 @@ export default function App() {
           data={embedSpace.data}
           entities={publicEmbed.entities}
           selectedEntityId={embedSelectedEntityId}
-          onSelectEntity={setEmbedSelectedEntityId}
+          externalMode={embedMode}
+          externalShowAnnotations={embedAnnotations}
+          onSelectEntity={(entId) => {
+            setEmbedSelectedEntityId(entId);
+            if (initialQuery.isSdk && window.parent && window.parent !== window) {
+              window.parent.postMessage(
+                {
+                  type: 'spacekit:entitySelected',
+                  sid: initialQuery.sid,
+                  entityId: entId,
+                },
+                '*'
+              );
+            }
+          }}
         />
         <div className="absolute top-3 left-3 z-20 bg-white/95 backdrop-blur border border-[#e5e8ec] rounded-md px-3 py-2 shadow-sm flex items-center gap-3">
           <div className="w-6 h-6 rounded bg-[#1f242c] text-white flex items-center justify-center text-xs font-bold shrink-0">

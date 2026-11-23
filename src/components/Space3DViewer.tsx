@@ -22,6 +22,8 @@ interface Space3DViewerProps {
   interactiveEquipment?: boolean;
   showControlsToolbar?: boolean;
   compactPreview?: boolean;
+  externalMode?: '2d' | '3d';
+  externalShowAnnotations?: boolean;
   onSnapshotReady?: (captureFn: () => string | null) => void;
 }
 
@@ -47,11 +49,15 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
   interactiveEquipment = false,
   showControlsToolbar = true,
   compactPreview = false,
+  externalMode,
+  externalShowAnnotations,
   onSnapshotReady,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [is2D, setIs2D] = useState(false);
-  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [is2D, setIs2D] = useState(externalMode === '2d');
+  const [showAnnotations, setShowAnnotations] = useState(
+    externalShowAnnotations !== undefined ? externalShowAnnotations : true
+  );
   const [labels, setLabels] = useState<LabelProjection[]>([]);
   const [webglError, setWebglError] = useState<string | null>(null);
 
@@ -644,6 +650,18 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
   useEffect(() => {
     rebuildSceneRef.current?.();
   }, [data, entities, selectedEquipmentId, selectedEntityId, showAnnotations]);
+
+  useEffect(() => {
+    if (externalMode === undefined) return;
+    const to2D = externalMode === '2d';
+    setIs2D(to2D);
+    cameraActionsRef.current?.toggle2D(to2D);
+  }, [externalMode]);
+
+  useEffect(() => {
+    if (externalShowAnnotations === undefined) return;
+    setShowAnnotations(externalShowAnnotations);
+  }, [externalShowAnnotations]);
 
   return (
     <div className="relative w-full h-full overflow-hidden space-3d-bg select-none">

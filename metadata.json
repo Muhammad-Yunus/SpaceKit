@@ -1,0 +1,6 @@
+{
+  "name": "SpaceKit",
+  "description": "2D-to-3D architectural spatial studio, geospatial building placement, and developer spatial SDK/API platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

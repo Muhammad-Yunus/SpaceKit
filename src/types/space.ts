@@ -200,3 +200,27 @@ export interface AgentStepTrace {
   status: 'done' | 'warning';
 }
 
+export type SpatialEntityType =
+  | 'sensor'
+  | 'beacon'
+  | 'asset'
+  | 'hvac'
+  | 'camera'
+  | 'zone_occupancy';
+
+export type SpatialEntityStatus = 'online' | 'warning' | 'offline';
+
+export interface SpatialEntityRecord {
+  id: string;
+  spaceId: string;
+  levelId: string;
+  name: string;
+  entityType: SpatialEntityType;
+  status: SpatialEntityStatus;
+  x: number;
+  z: number;
+  elevation: number;
+  metadata: Record<string, string | number | boolean>;
+  createdAt: string;
+  updatedAt: string;
+}

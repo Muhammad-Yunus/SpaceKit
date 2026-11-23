@@ -135,6 +135,22 @@ export async function ensureDatabaseSchema(): Promise<void> {
         applied_design_update BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS spatial_entities (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        level_id TEXT NOT NULL DEFAULT 'level_1',
+        name TEXT NOT NULL,
+        entity_type TEXT NOT NULL DEFAULT 'sensor',
+        status TEXT NOT NULL DEFAULT 'online',
+        x DOUBLE PRECISION NOT NULL DEFAULT 0,
+        z DOUBLE PRECISION NOT NULL DEFAULT 0,
+        elevation DOUBLE PRECISION NOT NULL DEFAULT 1.2,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
 
     schemaInitialized = true;

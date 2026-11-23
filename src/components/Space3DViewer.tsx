@@ -3,14 +3,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Crosshair, Plus, Minus, Tag } from 'lucide-react';
-import type { SpaceData } from '../types/space.ts';
-import { buildSpaceScene, type BuiltEquipmentRef } from '../three/buildSpaceScene.ts';
+import type { SpaceData, SpatialEntityRecord } from '../types/space.ts';
+import {
+  buildSpaceScene,
+  type BuiltEquipmentRef,
+  type BuiltEntityRef,
+} from '../three/buildSpaceScene.ts';
 
 interface Space3DViewerProps {
   data: SpaceData;
+  entities?: SpatialEntityRecord[];
   selectedEquipmentId?: string | null;
+  selectedEntityId?: string | null;
   onSelectEquipment?: (id: string | null) => void;
+  onSelectEntity?: (id: string | null) => void;
   onMoveEquipment?: (id: string, x: number, z: number) => void;
+  onPickFloorPoint?: (x: number, z: number) => void;
   interactiveEquipment?: boolean;
   showControlsToolbar?: boolean;
   compactPreview?: boolean;
@@ -23,13 +31,19 @@ interface LabelProjection {
   x: number;
   y: number;
   visible: boolean;
+  kind?: 'room' | 'entity';
+  status?: string;
 }
 
 export const Space3DViewer: React.FC<Space3DViewerProps> = ({
   data,
+  entities = [],
   selectedEquipmentId = null,
+  selectedEntityId = null,
   onSelectEquipment,
+  onSelectEntity,
   onMoveEquipment,
+  onPickFloorPoint,
   interactiveEquipment = false,
   showControlsToolbar = true,
   compactPreview = false,
@@ -43,14 +57,22 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
 
   const dataRef = useRef(data);
   dataRef.current = data;
+  const entitiesRef = useRef(entities);
+  entitiesRef.current = entities;
   const selectedIdRef = useRef(selectedEquipmentId);
   selectedIdRef.current = selectedEquipmentId;
+  const selectedEntityIdRef = useRef(selectedEntityId);
+  selectedEntityIdRef.current = selectedEntityId;
   const showAnnotationsRef = useRef(showAnnotations);
   showAnnotationsRef.current = showAnnotations;
   const onSelectRef = useRef(onSelectEquipment);
   onSelectRef.current = onSelectEquipment;
+  const onSelectEntityRef = useRef(onSelectEntity);
+  onSelectEntityRef.current = onSelectEntity;
   const onMoveRef = useRef(onMoveEquipment);
   onMoveRef.current = onMoveEquipment;
+  const onPickFloorRef = useRef(onPickFloorPoint);
+  onPickFloorRef.current = onPickFloorPoint;
   const interactiveRef = useRef(interactiveEquipment);
   interactiveRef.current = interactiveEquipment;
 
@@ -155,6 +177,7 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
 
     let currentBuilt: ReturnType<typeof buildSpaceScene> | null = null;
     let equipmentRefs: BuiltEquipmentRef[] = [];
+    let entityRefs: BuiltEntityRef[] = [];
     let sceneCenter = new THREE.Vector3(0, 1, 0);
     let sceneRadius = 12;
 
@@ -169,32 +192,68 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
       if (!w || !h) return;
 
       const items: LabelProjection[] = [];
-      const lvl = dataRef.current.levels[0];
-      if (!lvl) {
+      const levels = dataRef.current.levels;
+      if (levels.length === 0) {
         setLabels([]);
         return;
       }
 
-      const sources: Array<{ id: string; text: string; x: number; z: number; y: number }> = [
-        ...lvl.annotations.map((a) => ({
-          id: a.id,
-          text: a.text,
-          x: a.x,
-          z: a.z,
-          y: a.y ?? 0.35,
-        })),
-      ];
+      const sources: Array<{
+        id: string;
+        text: string;
+        x: number;
+        z: number;
+        y: number;
+        kind: 'room' | 'entity';
+        status?: string;
+      }> = [];
 
-      // Include room names if no explicit annotation duplicates them
-      const existingNames = new Set(sources.map((s) => s.text.toLowerCase()));
-      for (const r of lvl.rooms) {
-        if (!existingNames.has(r.name.toLowerCase()) && r.polygon.length >= 3) {
-          const cx =
-            r.polygon.reduce((acc, p) => acc + p.x, 0) / r.polygon.length;
-          const cz =
-            r.polygon.reduce((acc, p) => acc + p.z, 0) / r.polygon.length;
-          sources.push({ id: r.id, text: r.name, x: cx, z: cz, y: 0.35 });
+      levels.forEach((lvl, lvlIdx) => {
+        const baseY = lvl.elevation || lvlIdx * 3.0;
+        const levelSources: Array<{ id: string; text: string; x: number; z: number; y: number }> =
+          lvl.annotations.map((a) => ({
+            id: `${lvl.id}_${a.id}`,
+            text: a.text,
+            x: a.x,
+            z: a.z,
+            y: baseY + (a.y ?? 0.35),
+          }));
+
+        const existingNames = new Set(levelSources.map((s) => s.text.toLowerCase()));
+        for (const r of lvl.rooms) {
+          if (!existingNames.has(r.name.toLowerCase()) && r.polygon.length >= 3) {
+            const cx =
+              r.polygon.reduce((acc, p) => acc + p.x, 0) / r.polygon.length;
+            const cz =
+              r.polygon.reduce((acc, p) => acc + p.z, 0) / r.polygon.length;
+            levelSources.push({
+              id: `${lvl.id}_${r.id}`,
+              text: r.name,
+              x: cx,
+              z: cz,
+              y: baseY + 0.35,
+            });
+          }
         }
+
+        for (const s of levelSources) {
+          sources.push({ ...s, kind: 'room' });
+        }
+      });
+
+      for (const ent of entitiesRef.current) {
+        const lvlIdx = levels.findIndex((l) => l.id === ent.levelId);
+        const lvl = lvlIdx >= 0 ? levels[lvlIdx] : levels[0];
+        const baseY = lvl ? lvl.elevation || Math.max(0, lvlIdx) * 3.0 : 0;
+        sources.push({
+          id: `ent_${ent.id}`,
+          text: ent.name,
+          x: ent.x,
+          z: ent.z,
+          y: baseY + ent.elevation + 0.32,
+          kind: 'entity',
+          status: ent.status,
+        });
       }
 
       for (const s of sources) {
@@ -207,6 +266,8 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
           x: ((projectVec.x + 1) / 2) * w,
           y: ((-projectVec.y + 1) / 2) * h,
           visible,
+          kind: s.kind,
+          status: s.status,
         });
       }
       setLabels(items);
@@ -343,9 +404,15 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
         scene.remove(currentBuilt.root);
         currentBuilt.dispose();
       }
-      currentBuilt = buildSpaceScene(dataRef.current, selectedIdRef.current);
+      currentBuilt = buildSpaceScene(
+        dataRef.current,
+        selectedIdRef.current,
+        entitiesRef.current,
+        selectedEntityIdRef.current
+      );
       scene.add(currentBuilt.root);
       equipmentRefs = currentBuilt.equipmentRefs;
+      entityRefs = currentBuilt.entityRefs;
       sceneCenter = currentBuilt.center.clone();
       sceneRadius = Math.max(5, currentBuilt.size.length() * 0.55);
 
@@ -384,8 +451,8 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (!interactiveRef.current) return;
       pointerDownPos = { x: e.clientX, y: e.clientY };
+      if (!interactiveRef.current) return;
       updatePointer(e);
       raycaster.setFromCamera(pointer, camera);
       const hitBoxes = equipmentRefs.map((r) => r.hitBox);
@@ -394,17 +461,16 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
       if (hits.length > 0) {
         const eqId = hits[0].object.userData.equipmentId as string;
         if (eqId === selectedIdRef.current) {
+          const ref = equipmentRefs.find((r) => r.id === eqId);
+          floorPlane.constant = -(ref ? ref.levelElevation + ref.item.elevation / 100 : 0);
           draggingEquipmentId = eqId;
           controls.enabled = false;
-          if (raycaster.ray.intersectPlane(floorPlane, dragIntersect)) {
-            const ref = equipmentRefs.find((r) => r.id === eqId);
-            if (ref) {
-              dragOffset.set(
-                ref.group.position.x - dragIntersect.x,
-                0,
-                ref.group.position.z - dragIntersect.z
-              );
-            }
+          if (raycaster.ray.intersectPlane(floorPlane, dragIntersect) && ref) {
+            dragOffset.set(
+              ref.group.position.x - dragIntersect.x,
+              0,
+              ref.group.position.z - dragIntersect.z
+            );
           }
         }
       }
@@ -441,7 +507,6 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
         return;
       }
 
-      if (!interactiveRef.current) return;
       const moved = Math.hypot(
         e.clientX - pointerDownPos.x,
         e.clientY - pointerDownPos.y
@@ -450,6 +515,30 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
 
       updatePointer(e);
       raycaster.setFromCamera(pointer, camera);
+
+      if (onSelectEntityRef.current && entityRefs.length > 0) {
+        const entHits = raycaster.intersectObjects(
+          entityRefs.map((r) => r.hitBox),
+          false
+        );
+        if (entHits.length > 0) {
+          const entId = entHits[0].object.userData.entityId as string;
+          onSelectEntityRef.current(entId);
+          return;
+        }
+      }
+
+      if (onPickFloorRef.current) {
+        floorPlane.constant = 0;
+        if (raycaster.ray.intersectPlane(floorPlane, dragIntersect)) {
+          onPickFloorRef.current(
+            Number(dragIntersect.x.toFixed(2)),
+            Number(dragIntersect.z.toFixed(2))
+          );
+        }
+      }
+
+      if (!interactiveRef.current) return;
       const hitBoxes = equipmentRefs.map((r) => r.hitBox);
       const hits = raycaster.intersectObjects(hitBoxes, false);
       if (hits.length > 0) {
@@ -554,7 +643,7 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
 
   useEffect(() => {
     rebuildSceneRef.current?.();
-  }, [data, selectedEquipmentId, showAnnotations]);
+  }, [data, entities, selectedEquipmentId, selectedEntityId, showAnnotations]);
 
   return (
     <div className="relative w-full h-full overflow-hidden space-3d-bg select-none">
@@ -566,7 +655,7 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
         </div>
       )}
 
-      {/* Floating 3D room & zone annotations matching Screenshot 2 & 4 */}
+      {/* Floating 3D room, zone & entity annotations */}
       {showAnnotations &&
         !compactPreview &&
         labels.map(
@@ -577,9 +666,24 @@ export const Space3DViewer: React.FC<Space3DViewerProps> = ({
                 style={{
                   transform: `translate(${l.x}px, ${l.y}px) translate(-50%, -50%)`,
                 }}
-                className="pointer-events-none absolute top-0 left-0 text-[11px] font-medium text-[#1f242c] px-1.5 py-0.5 whitespace-nowrap drop-shadow-[0_1px_1px_rgba(255,255,255,0.9)]"
+                className={
+                  l.kind === 'entity'
+                    ? 'pointer-events-none absolute top-0 left-0 text-[10px] font-semibold text-white bg-[#1f242c]/90 px-2 py-0.5 rounded-full whitespace-nowrap shadow-sm flex items-center gap-1'
+                    : 'pointer-events-none absolute top-0 left-0 text-[11px] font-medium text-[#1f242c] px-1.5 py-0.5 whitespace-nowrap drop-shadow-[0_1px_1px_rgba(255,255,255,0.9)]'
+                }
               >
-                {l.text}
+                {l.kind === 'entity' && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      l.status === 'online'
+                        ? 'bg-emerald-400'
+                        : l.status === 'warning'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-400'
+                    }`}
+                  />
+                )}
+                <span>{l.text}</span>
               </div>
             )
         )}

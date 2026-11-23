@@ -6,6 +6,9 @@ import type {
   AiChatMessage,
   SpaceData,
   AgentStepTrace,
+  SpatialEntityRecord,
+  SpatialEntityType,
+  SpatialEntityStatus,
 } from '../types/space.ts';
 
 let memoryToken: string | null = null;
@@ -95,6 +98,12 @@ export const api = {
 
   me: () => apiFetch<{ user: AuthUser }>('/api/auth/me'),
 
+  updateWorkspaceName: (workspaceName: string) =>
+    apiFetch<{ user: AuthUser }>('/api/auth/workspace', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceName }),
+    }),
+
   listSpaces: () => apiFetch<{ spaces: SpaceRecord[] }>('/api/spaces'),
 
   createSpace: (body: {
@@ -119,6 +128,7 @@ export const api = {
     patch: Partial<{
       name: string;
       description: string;
+      status: 'live' | 'draft';
       locked: boolean;
       tags: string[];
       projectId: string | null;
@@ -192,6 +202,7 @@ export const api = {
         totalViews: number;
         totalSizeKb: number;
         totalApiRequests: number;
+        totalEntities: number;
         geolocatedSpaces: number;
         spacesBreakdown: Array<{
           id: string;
@@ -202,9 +213,84 @@ export const api = {
           sizeKb: number;
           levels: number;
           equipmentCount: number;
+          entityCount: number;
         }>;
       };
     }>('/api/usage'),
+
+  listEntities: (spaceId: string) =>
+    apiFetch<{ entities: SpatialEntityRecord[] }>(
+      `/api/spaces/${encodeURIComponent(spaceId)}/entities`
+    ),
+
+  createEntity: (
+    spaceId: string,
+    body: {
+      name: string;
+      levelId?: string;
+      entityType?: SpatialEntityType;
+      status?: SpatialEntityStatus;
+      x?: number;
+      z?: number;
+      elevation?: number;
+      metadata?: Record<string, string | number | boolean>;
+    }
+  ) =>
+    apiFetch<{ entity: SpatialEntityRecord }>(
+      `/api/spaces/${encodeURIComponent(spaceId)}/entities`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    ),
+
+  updateEntity: (
+    spaceId: string,
+    entityId: string,
+    patch: Partial<{
+      name: string;
+      levelId: string;
+      entityType: SpatialEntityType;
+      status: SpatialEntityStatus;
+      x: number;
+      z: number;
+      elevation: number;
+      metadata: Record<string, string | number | boolean>;
+    }>
+  ) =>
+    apiFetch<{ entity: SpatialEntityRecord }>(
+      `/api/spaces/${encodeURIComponent(spaceId)}/entities/${encodeURIComponent(entityId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }
+    ),
+
+  deleteEntity: (spaceId: string, entityId: string) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/spaces/${encodeURIComponent(spaceId)}/entities/${encodeURIComponent(entityId)}`,
+      { method: 'DELETE' }
+    ),
+
+  getPublicSpace: (spaceId: string) =>
+    apiFetch<{
+      space: {
+        id: string;
+        name: string;
+        description: string;
+        status: string;
+        tags: string[];
+        sqft: number;
+        views: number;
+        complexity: number;
+        address: string | null;
+        latitude: number | null;
+        longitude: number | null;
+        data: SpaceData;
+        updatedAt: string;
+      };
+      entities: SpatialEntityRecord[];
+    }>(`/api/public/spaces/${encodeURIComponent(spaceId)}`),
 
   cadTo3D: (formData: FormData) =>
     apiFetch<{
@@ -244,6 +330,12 @@ export const api = {
   testSdkGeo: (spaceId: string, apiKey?: string) =>
     apiFetch<Record<string, unknown>>(
       `/api/v1/spaces/${encodeURIComponent(spaceId)}/geo`,
+      apiKey ? { headers: { 'x-spacekit-key': apiKey } } : {}
+    ),
+
+  testSdkEntities: (spaceId: string, apiKey?: string) =>
+    apiFetch<Record<string, unknown>>(
+      `/api/v1/spaces/${encodeURIComponent(spaceId)}/entities`,
       apiKey ? { headers: { 'x-spacekit-key': apiKey } } : {}
     ),
 };

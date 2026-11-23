@@ -6,6 +6,7 @@ import type {
   DoorOpening,
   WindowOpening,
   EquipmentItem,
+  SpatialEntityRecord,
 } from '../types/space.ts';
 
 export interface BuiltEquipmentRef {
@@ -13,11 +14,20 @@ export interface BuiltEquipmentRef {
   group: THREE.Group;
   hitBox: THREE.Mesh;
   item: EquipmentItem;
+  levelElevation: number;
+}
+
+export interface BuiltEntityRef {
+  id: string;
+  group: THREE.Group;
+  hitBox: THREE.Mesh;
+  entity: SpatialEntityRecord;
 }
 
 export interface BuiltSpaceResult {
   root: THREE.Group;
   equipmentRefs: BuiltEquipmentRef[];
+  entityRefs: BuiltEntityRef[];
   boundingBox: THREE.Box3;
   center: THREE.Vector3;
   size: THREE.Vector3;
@@ -449,12 +459,81 @@ function buildWallWithOpenings(
   return wallGroup;
 }
 
+function createEntityMarkerGroup(
+  entity: SpatialEntityRecord,
+  isSelected: boolean
+): { group: THREE.Group; hitBox: THREE.Mesh } {
+  const group = new THREE.Group();
+  group.name = `entity:${entity.id}`;
+
+  const colorHex = isSelected
+    ? 0xea580c
+    : entity.status === 'online'
+    ? 0x10b981
+    : entity.status === 'warning'
+    ? 0xf59e0b
+    : 0x64748b;
+
+  const orbMat = new THREE.MeshStandardMaterial({
+    color: colorHex,
+    emissive: colorHex,
+    emissiveIntensity: isSelected ? 0.45 : 0.22,
+    roughness: 0.3,
+    metalness: 0.15,
+  });
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: colorHex,
+    transparent: true,
+    opacity: isSelected ? 0.9 : 0.45,
+    side: THREE.DoubleSide,
+  });
+
+  const baseRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.18, 0.25, 24),
+    ringMat
+  );
+  baseRing.rotation.x = -Math.PI / 2;
+  baseRing.position.y = 0.03;
+  group.add(baseRing);
+
+  const elev = Math.max(0.25, entity.elevation);
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.015, 0.015, elev, 8),
+    new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.5 })
+  );
+  stem.position.y = elev / 2;
+  group.add(stem);
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(isSelected ? 0.16 : 0.13, 18, 18),
+    orbMat
+  );
+  head.position.y = elev;
+  head.castShadow = true;
+  group.add(head);
+
+  const hitBox = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.28, elev + 0.35, 10),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  hitBox.position.y = (elev + 0.35) / 2;
+  hitBox.userData.entityId = entity.id;
+  group.add(hitBox);
+
+  group.position.set(entity.x, 0, entity.z);
+  return { group, hitBox };
+}
+
 export function buildSpaceScene(
   data: SpaceData,
-  selectedEquipmentId: string | null
+  selectedEquipmentId: string | null,
+  entities: SpatialEntityRecord[] = [],
+  selectedEntityId: string | null = null
 ): BuiltSpaceResult {
   const root = new THREE.Group();
   const equipmentRefs: BuiltEquipmentRef[] = [];
+  const entityRefs: BuiltEntityRef[] = [];
 
   const wallMat = new THREE.MeshStandardMaterial({
     color: 0xf6f7f9,
@@ -569,11 +648,31 @@ export function buildSpaceScene(
       eqGroup.add(hitBox);
       levelGroup.add(eqGroup);
 
+      const levelElevation = level.elevation || lvlIdx * 3.0;
       equipmentRefs.push({
         id: item.id,
         group: eqGroup,
         hitBox,
         item,
+        levelElevation,
+      });
+    }
+
+    // Spatial IoT / Asset entities belonging to this level (or fallback to level 0)
+    const levelEntities = entities.filter(
+      (ent) => ent.levelId === level.id || (lvlIdx === 0 && !data.levels.some((l) => l.id === ent.levelId))
+    );
+    for (const ent of levelEntities) {
+      const { group: entGroup, hitBox } = createEntityMarkerGroup(
+        ent,
+        ent.id === selectedEntityId
+      );
+      levelGroup.add(entGroup);
+      entityRefs.push({
+        id: ent.id,
+        group: entGroup,
+        hitBox,
+        entity: ent,
       });
     }
 
@@ -615,5 +714,5 @@ export function buildSpaceScene(
     });
   };
 
-  return { root, equipmentRefs, boundingBox, center, size, dispose };
+  return { root, equipmentRefs, entityRefs, boundingBox, center, size, dispose };
 }

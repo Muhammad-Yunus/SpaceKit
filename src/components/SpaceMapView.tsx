@@ -20,6 +20,7 @@ import {
   Box,
   Loader2,
   AlertCircle,
+  Layers,
 } from 'lucide-react';
 import { api } from '../lib/api.ts';
 import type { SpaceRecord, SpaceData } from '../types/space.ts';
@@ -149,6 +150,7 @@ interface MapViewportControllerProps {
   lat: number;
   lng: number;
   is3DMap: boolean;
+  mapType: 'roadmap' | 'hybrid';
   recenterSignal: number;
   zoomDeltaSignal: { seq: number; delta: number };
 }
@@ -157,6 +159,7 @@ const MapViewportController: React.FC<MapViewportControllerProps> = ({
   lat,
   lng,
   is3DMap,
+  mapType,
   recenterSignal,
   zoomDeltaSignal,
 }) => {
@@ -167,6 +170,11 @@ const MapViewportController: React.FC<MapViewportControllerProps> = ({
     map.setTilt(is3DMap ? 45 : 0);
     map.setHeading(is3DMap ? -16 : 0);
   }, [map, is3DMap]);
+
+  useEffect(() => {
+    if (!map) return;
+    map.setMapTypeId(mapType);
+  }, [map, mapType]);
 
   useEffect(() => {
     if (!map || recenterSignal === 0) return;
@@ -194,17 +202,22 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
   const defaultLat = space.latitude ?? -6.2615;
   const defaultLng = space.longitude ?? 106.8106;
 
+  const hasSavedLocation = space.latitude !== null && space.longitude !== null;
   const [lat, setLat] = useState<number>(defaultLat);
   const [lng, setLng] = useState<number>(defaultLng);
   const [address, setAddress] = useState<string>(space.address ?? '');
   const [geoRotation, setGeoRotation] = useState<number>(space.geoRotation ?? 0);
   const [geoScale, setGeoScale] = useState<number>(space.geoScale ?? 1);
   const [is3DMap, setIs3DMap] = useState<boolean>(mode === 'view');
-  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(2);
+  const [mapType, setMapType] = useState<'roadmap' | 'hybrid'>('roadmap');
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(
+    hasSavedLocation ? 2 : 1
+  );
   const [subCheck, setSubCheck] = useState<0 | 1 | 2>(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [mapsApiKey, setMapsApiKey] = useState<string>(
@@ -215,8 +228,6 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
   );
   const [recenterSignal, setRecenterSignal] = useState(0);
   const [zoomDeltaSignal, setZoomDeltaSignal] = useState({ seq: 0, delta: 0 });
-
-  const hasSavedLocation = space.latitude !== null && space.longitude !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -244,6 +255,9 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
     setAddress(space.address ?? '');
     setGeoRotation(space.geoRotation ?? 0);
     setGeoScale(space.geoScale ?? 1);
+    setWizardStep(space.latitude !== null && space.longitude !== null ? 2 : 1);
+    setSubCheck(0);
+    setSaveError(null);
   }, [space.id, space.latitude, space.longitude, space.address, space.geoRotation, space.geoScale]);
 
   const footprintPaths = useMemo(
@@ -295,6 +309,7 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
 
   const handlePersistLocation = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       await onSaveLocation({
         address: address.trim() || `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
@@ -304,6 +319,10 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
         geoScale,
       });
       onFinishWizard?.();
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Failed to save coordinates.'
+      );
     } finally {
       setSaving(false);
     }
@@ -607,6 +626,11 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
                     className="w-full border border-[#d6dce3] rounded px-2.5 py-1.5"
                   />
                 </div>
+                {saveError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">
+                    {saveError}
+                  </div>
+                )}
                 <button
                   type="button"
                   disabled={saving}
@@ -685,6 +709,7 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
                 lat={lat}
                 lng={lng}
                 is3DMap={is3DMap}
+                mapType={mapType}
                 recenterSignal={recenterSignal}
                 zoomDeltaSignal={zoomDeltaSignal}
               />
@@ -754,6 +779,24 @@ export const SpaceMapView: React.FC<SpaceMapViewProps> = ({
 
         {/* Right Floating Map Controls matching Screenshot 3 & 5 */}
         <div className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setMapType((t) => (t === 'roadmap' ? 'hybrid' : 'roadmap'))
+            }
+            className={`w-9 h-9 border rounded-md shadow-sm flex items-center justify-center transition-colors ${
+              mapType === 'hybrid'
+                ? 'bg-[#1f242c] text-white border-[#1f242c]'
+                : 'bg-white text-slate-700 border-[#dce1e7] hover:bg-slate-50'
+            }`}
+            title={
+              mapType === 'hybrid'
+                ? 'Switch to vector roadmap'
+                : 'Switch to satellite imagery'
+            }
+          >
+            <Layers className="w-4 h-4" />
+          </button>
           <button
             type="button"
             onClick={() => setIs3DMap((v) => !v)}

@@ -17,6 +17,7 @@ import {
   spaces,
   apiKeys,
   aiMessages,
+  spatialEntities,
 } from './src/db/schema.ts';
 import {
   hashPassword,
@@ -34,7 +35,11 @@ import {
   runSpatialChat,
   getAiProviderStatus,
 } from './server/ai.ts';
-import type { SpaceData } from './src/types/space.ts';
+import type {
+  SpaceData,
+  SpatialEntityStatus,
+  SpatialEntityType,
+} from './src/types/space.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const upload = multer({
@@ -134,6 +139,63 @@ function serializeSpace(row: typeof spaces.$inferSelect) {
     data: row.data,
     unpublishedData: row.unpublishedData,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+const VALID_ENTITY_TYPES = new Set<SpatialEntityType>([
+  'sensor',
+  'beacon',
+  'asset',
+  'hvac',
+  'camera',
+  'zone_occupancy',
+]);
+
+const VALID_ENTITY_STATUSES = new Set<SpatialEntityStatus>([
+  'online',
+  'warning',
+  'offline',
+]);
+
+function sanitizeEntityType(raw: unknown): SpatialEntityType {
+  const val = String(raw || '').trim() as SpatialEntityType;
+  return VALID_ENTITY_TYPES.has(val) ? val : 'sensor';
+}
+
+function sanitizeEntityStatus(raw: unknown): SpatialEntityStatus {
+  const val = String(raw || '').trim() as SpatialEntityStatus;
+  return VALID_ENTITY_STATUSES.has(val) ? val : 'online';
+}
+
+function sanitizeEntityMetadata(
+  raw: unknown
+): Record<string, string | number | boolean> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>).slice(0, 20)) {
+    const key = String(k).trim().slice(0, 64);
+    if (!key) continue;
+    if (typeof v === 'string') out[key] = v.slice(0, 200);
+    else if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+    else if (typeof v === 'boolean') out[key] = v;
+  }
+  return out;
+}
+
+function serializeEntity(row: typeof spatialEntities.$inferSelect) {
+  return {
+    id: row.id,
+    spaceId: row.spaceId,
+    levelId: row.levelId,
+    name: row.name,
+    entityType: sanitizeEntityType(row.entityType),
+    status: sanitizeEntityStatus(row.status),
+    x: row.x,
+    z: row.z,
+    elevation: row.elevation,
+    metadata: row.metadata ?? {},
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -367,6 +429,34 @@ async function startServer() {
     return res.json({ user: req.user });
   });
 
+  app.patch('/api/auth/workspace', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const db = getDb();
+      const workspaceName = String(req.body?.workspaceName || '').trim().slice(0, 80);
+      if (!workspaceName) {
+        return res.status(400).json({ error: 'Workspace name is required' });
+      }
+      const [updated] = await db
+        .update(users)
+        .set({ workspaceName })
+        .where(eq(users.id, req.user!.id))
+        .returning();
+
+      return res.json({
+        user: {
+          id: updated.id,
+          email: updated.email,
+          name: updated.name,
+          workspaceName: updated.workspaceName,
+          createdAt: updated.createdAt.toISOString(),
+        },
+      });
+    } catch (err) {
+      console.error('Update workspace error:', err);
+      return res.status(500).json({ error: 'Failed to update workspace name' });
+    }
+  });
+
   // ---------------- SPACES ROUTES ----------------
   app.get('/api/spaces', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
@@ -389,6 +479,16 @@ async function startServer() {
       const name = String(req.body?.name || '').trim() || 'Untitled space';
       const description = String(req.body?.description || '').trim();
       const projectId = req.body?.projectId ? String(req.body.projectId) : null;
+      if (projectId) {
+        const ownedProject = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(eq(projects.id, projectId), eq(projects.userId, req.user!.id)))
+          .limit(1);
+        if (ownedProject.length === 0) {
+          return res.status(400).json({ error: 'Invalid project assignment' });
+        }
+      }
       const tags = Array.isArray(req.body?.tags)
         ? req.body.tags.map((t: unknown) => String(t)).filter(Boolean)
         : [];
@@ -477,18 +577,58 @@ async function startServer() {
 
       if (typeof req.body?.name === 'string') patch.name = req.body.name.trim() || current.name;
       if (typeof req.body?.description === 'string') patch.description = req.body.description;
+      if (req.body?.status === 'live' || req.body?.status === 'draft') {
+        patch.status = req.body.status;
+      }
       if (typeof req.body?.locked === 'boolean') patch.locked = req.body.locked;
       if (Array.isArray(req.body?.tags)) {
         patch.tags = req.body.tags.map((t: unknown) => String(t)).filter(Boolean);
       }
       if (req.body?.projectId !== undefined) {
-        patch.projectId = req.body.projectId ? String(req.body.projectId) : null;
+        const nextProjectId = req.body.projectId ? String(req.body.projectId) : null;
+        if (nextProjectId) {
+          const ownedProject = await db
+            .select({ id: projects.id })
+            .from(projects)
+            .where(and(eq(projects.id, nextProjectId), eq(projects.userId, req.user!.id)))
+            .limit(1);
+          if (ownedProject.length === 0) {
+            return res.status(400).json({ error: 'Invalid project assignment' });
+          }
+        }
+        patch.projectId = nextProjectId;
       }
       if (req.body?.address !== undefined) patch.address = req.body.address;
-      if (req.body?.latitude !== undefined) patch.latitude = req.body.latitude !== null ? Number(req.body.latitude) : null;
-      if (req.body?.longitude !== undefined) patch.longitude = req.body.longitude !== null ? Number(req.body.longitude) : null;
-      if (req.body?.geoRotation !== undefined) patch.geoRotation = Number(req.body.geoRotation) || 0;
-      if (req.body?.geoScale !== undefined) patch.geoScale = Number(req.body.geoScale) || 1;
+      if (req.body?.latitude !== undefined) {
+        if (req.body.latitude === null) {
+          patch.latitude = null;
+        } else {
+          const val = Number(req.body.latitude);
+          if (!Number.isFinite(val) || val < -90 || val > 90) {
+            return res.status(400).json({ error: 'Invalid latitude' });
+          }
+          patch.latitude = val;
+        }
+      }
+      if (req.body?.longitude !== undefined) {
+        if (req.body.longitude === null) {
+          patch.longitude = null;
+        } else {
+          const val = Number(req.body.longitude);
+          if (!Number.isFinite(val) || val < -180 || val > 180) {
+            return res.status(400).json({ error: 'Invalid longitude' });
+          }
+          patch.longitude = val;
+        }
+      }
+      if (req.body?.geoRotation !== undefined) {
+        const val = Number(req.body.geoRotation);
+        patch.geoRotation = Number.isFinite(val) ? val : 0;
+      }
+      if (req.body?.geoScale !== undefined) {
+        const val = Number(req.body.geoScale);
+        patch.geoScale = Number.isFinite(val) && val > 0 ? val : 1;
+      }
       if (typeof req.body?.thumbnailUrl === 'string') patch.thumbnailUrl = req.body.thumbnailUrl;
 
       if (req.body?.unpublishedData) {
@@ -600,6 +740,249 @@ async function startServer() {
     } catch (err) {
       console.error('Delete space error:', err);
       return res.status(500).json({ error: 'Failed to delete space' });
+    }
+  });
+
+  // ---------------- SPATIAL ENTITIES ROUTES ----------------
+  app.get('/api/spaces/:id/entities', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const db = getDb();
+      const spaceId = String(req.params.id);
+      const owned = await db
+        .select({ id: spaces.id })
+        .from(spaces)
+        .where(and(eq(spaces.id, spaceId), eq(spaces.userId, req.user!.id)))
+        .limit(1);
+      if (owned.length === 0) {
+        return res.status(404).json({ error: 'Space not found' });
+      }
+      const rows = await db
+        .select()
+        .from(spatialEntities)
+        .where(
+          and(
+            eq(spatialEntities.spaceId, spaceId),
+            eq(spatialEntities.userId, req.user!.id)
+          )
+        )
+        .orderBy(desc(spatialEntities.updatedAt));
+      return res.json({ entities: rows.map(serializeEntity) });
+    } catch (err) {
+      console.error('List entities error:', err);
+      return res.status(500).json({ error: 'Failed to load spatial entities' });
+    }
+  });
+
+  app.post('/api/spaces/:id/entities', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const db = getDb();
+      const spaceId = String(req.params.id);
+      const spaceRows = await db
+        .select()
+        .from(spaces)
+        .where(and(eq(spaces.id, spaceId), eq(spaces.userId, req.user!.id)))
+        .limit(1);
+      if (spaceRows.length === 0) {
+        return res.status(404).json({ error: 'Space not found' });
+      }
+      if (spaceRows[0].locked) {
+        return res.status(423).json({
+          error: 'This space is locked. Unlock it from the Edit menu to add entities.',
+        });
+      }
+
+      const name = String(req.body?.name || '').trim().slice(0, 80);
+      if (!name) {
+        return res.status(400).json({ error: 'Entity name is required' });
+      }
+
+      const levelId =
+        String(req.body?.levelId || '').trim() ||
+        spaceRows[0].data.levels[0]?.id ||
+        'level_1';
+      const x = Number.isFinite(Number(req.body?.x)) ? Number(req.body.x) : 0;
+      const z = Number.isFinite(Number(req.body?.z)) ? Number(req.body.z) : 0;
+      const elevation = Number.isFinite(Number(req.body?.elevation))
+        ? Number(req.body.elevation)
+        : 1.2;
+
+      const [created] = await db
+        .insert(spatialEntities)
+        .values({
+          spaceId,
+          userId: req.user!.id,
+          levelId,
+          name,
+          entityType: sanitizeEntityType(req.body?.entityType),
+          status: sanitizeEntityStatus(req.body?.status),
+          x,
+          z,
+          elevation,
+          metadata: sanitizeEntityMetadata(req.body?.metadata),
+        })
+        .returning();
+
+      return res.status(201).json({ entity: serializeEntity(created) });
+    } catch (err) {
+      console.error('Create entity error:', err);
+      return res.status(500).json({ error: 'Failed to create spatial entity' });
+    }
+  });
+
+  app.patch(
+    '/api/spaces/:id/entities/:entityId',
+    requireAuth,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const db = getDb();
+        const spaceId = String(req.params.id);
+        const entityId = String(req.params.entityId);
+
+        const existing = await db
+          .select()
+          .from(spatialEntities)
+          .where(
+            and(
+              eq(spatialEntities.id, entityId),
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.user!.id)
+            )
+          )
+          .limit(1);
+
+        if (existing.length === 0) {
+          return res.status(404).json({ error: 'Entity not found' });
+        }
+
+        const patch: Record<string, unknown> = { updatedAt: new Date() };
+        if (typeof req.body?.name === 'string' && req.body.name.trim()) {
+          patch.name = req.body.name.trim().slice(0, 80);
+        }
+        if (typeof req.body?.levelId === 'string' && req.body.levelId.trim()) {
+          patch.levelId = req.body.levelId.trim();
+        }
+        if (req.body?.entityType !== undefined) {
+          patch.entityType = sanitizeEntityType(req.body.entityType);
+        }
+        if (req.body?.status !== undefined) {
+          patch.status = sanitizeEntityStatus(req.body.status);
+        }
+        if (req.body?.x !== undefined && Number.isFinite(Number(req.body.x))) {
+          patch.x = Number(req.body.x);
+        }
+        if (req.body?.z !== undefined && Number.isFinite(Number(req.body.z))) {
+          patch.z = Number(req.body.z);
+        }
+        if (
+          req.body?.elevation !== undefined &&
+          Number.isFinite(Number(req.body.elevation))
+        ) {
+          patch.elevation = Number(req.body.elevation);
+        }
+        if (req.body?.metadata !== undefined) {
+          patch.metadata = sanitizeEntityMetadata(req.body.metadata);
+        }
+
+        const [updated] = await db
+          .update(spatialEntities)
+          .set(patch)
+          .where(
+            and(
+              eq(spatialEntities.id, entityId),
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.user!.id)
+            )
+          )
+          .returning();
+
+        return res.json({ entity: serializeEntity(updated) });
+      } catch (err) {
+        console.error('Update entity error:', err);
+        return res.status(500).json({ error: 'Failed to update spatial entity' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/spaces/:id/entities/:entityId',
+    requireAuth,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const db = getDb();
+        const spaceId = String(req.params.id);
+        const entityId = String(req.params.entityId);
+
+        await db
+          .delete(spatialEntities)
+          .where(
+            and(
+              eq(spatialEntities.id, entityId),
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.user!.id)
+            )
+          );
+        return res.json({ ok: true });
+      } catch (err) {
+        console.error('Delete entity error:', err);
+        return res.status(500).json({ error: 'Failed to delete spatial entity' });
+      }
+    }
+  );
+
+  // ---------------- PUBLIC EMBED ROUTE (LIVE SPACES ONLY) ----------------
+  app.get('/api/public/spaces/:id', async (req, res) => {
+    try {
+      if (!isDatabaseConfigured()) {
+        return res.status(503).json({ error: 'Database not configured' });
+      }
+      await ensureDatabaseSchema();
+      const db = getDb();
+      const spaceId = String(req.params.id);
+
+      const rows = await db
+        .select()
+        .from(spaces)
+        .where(and(eq(spaces.id, spaceId), eq(spaces.status, 'live')))
+        .limit(1);
+
+      if (rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: 'Space is not published live or does not exist.' });
+      }
+
+      const [updated] = await db
+        .update(spaces)
+        .set({ views: sql`${spaces.views} + 1` })
+        .where(eq(spaces.id, spaceId))
+        .returning();
+
+      const entityRows = await db
+        .select()
+        .from(spatialEntities)
+        .where(eq(spatialEntities.spaceId, spaceId));
+
+      return res.json({
+        space: {
+          id: updated.id,
+          name: updated.name,
+          description: updated.description,
+          status: updated.status,
+          tags: updated.tags ?? [],
+          sqft: updated.sqft,
+          views: updated.views,
+          complexity: updated.complexity,
+          address: updated.address,
+          latitude: updated.latitude,
+          longitude: updated.longitude,
+          data: updated.data,
+          updatedAt: updated.updatedAt.toISOString(),
+        },
+        entities: entityRows.map(serializeEntity),
+      });
+    } catch (err) {
+      console.error('Public embed space error:', err);
+      return res.status(500).json({ error: 'Failed to load embedded space' });
     }
   });
 
@@ -781,12 +1164,22 @@ async function startServer() {
         .select()
         .from(apiKeys)
         .where(eq(apiKeys.userId, req.user!.id));
+      const userEntities = await db
+        .select({ spaceId: spatialEntities.spaceId })
+        .from(spatialEntities)
+        .where(eq(spatialEntities.userId, req.user!.id));
+
+      const entityCounts = new Map<string, number>();
+      for (const e of userEntities) {
+        entityCounts.set(e.spaceId, (entityCounts.get(e.spaceId) || 0) + 1);
+      }
 
       const totalSpaces = userSpaces.length;
       const totalSqft = userSpaces.reduce((acc, s) => acc + s.sqft, 0);
       const totalViews = userSpaces.reduce((acc, s) => acc + s.views, 0);
       const totalSizeKb = userSpaces.reduce((acc, s) => acc + s.sizeKb, 0);
       const totalApiRequests = userKeys.reduce((acc, k) => acc + k.requestCount, 0);
+      const totalEntities = userEntities.length;
       const geolocatedSpaces = userSpaces.filter(
         (s) => s.latitude !== null && s.longitude !== null
       ).length;
@@ -798,6 +1191,7 @@ async function startServer() {
           totalViews,
           totalSizeKb,
           totalApiRequests,
+          totalEntities,
           geolocatedSpaces,
           spacesBreakdown: userSpaces.map((s) => ({
             id: s.id,
@@ -811,6 +1205,7 @@ async function startServer() {
               (acc, l) => acc + l.equipment.length,
               0
             ),
+            entityCount: entityCounts.get(s.id) || 0,
           })),
         },
       });
@@ -1260,6 +1655,164 @@ async function startServer() {
       } catch (err) {
         console.error('SDK geo error:', err);
         return res.status(500).json({ error: 'Failed to generate GeoJSON' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/v1/spaces/:id/entities',
+    requireApiKeyOrSession,
+    async (req: ApiKeyRequest, res) => {
+      try {
+        const db = getDb();
+        const spaceId = String(req.params.id);
+        const owned = await db
+          .select({ id: spaces.id })
+          .from(spaces)
+          .where(and(eq(spaces.id, spaceId), eq(spaces.userId, req.apiKeyUserId!)))
+          .limit(1);
+        if (owned.length === 0) {
+          return res.status(404).json({ error: 'Space not found' });
+        }
+        const rows = await db
+          .select()
+          .from(spatialEntities)
+          .where(
+            and(
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.apiKeyUserId!)
+            )
+          )
+          .orderBy(desc(spatialEntities.updatedAt));
+        return res.json({
+          spaceId,
+          count: rows.length,
+          entities: rows.map(serializeEntity),
+        });
+      } catch (err) {
+        console.error('SDK entities list error:', err);
+        return res.status(500).json({ error: 'Failed to retrieve entities' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/v1/spaces/:id/entities',
+    requireApiKeyOrSession,
+    async (req: ApiKeyRequest, res) => {
+      try {
+        const db = getDb();
+        const spaceId = String(req.params.id);
+        const spaceRows = await db
+          .select()
+          .from(spaces)
+          .where(and(eq(spaces.id, spaceId), eq(spaces.userId, req.apiKeyUserId!)))
+          .limit(1);
+        if (spaceRows.length === 0) {
+          return res.status(404).json({ error: 'Space not found' });
+        }
+
+        const name = String(req.body?.name || '').trim().slice(0, 80);
+        if (!name) {
+          return res.status(400).json({ error: 'Entity name is required' });
+        }
+
+        const [created] = await db
+          .insert(spatialEntities)
+          .values({
+            spaceId,
+            userId: req.apiKeyUserId!,
+            levelId:
+              String(req.body?.levelId || '').trim() ||
+              spaceRows[0].data.levels[0]?.id ||
+              'level_1',
+            name,
+            entityType: sanitizeEntityType(req.body?.entityType),
+            status: sanitizeEntityStatus(req.body?.status),
+            x: Number.isFinite(Number(req.body?.x)) ? Number(req.body.x) : 0,
+            z: Number.isFinite(Number(req.body?.z)) ? Number(req.body.z) : 0,
+            elevation: Number.isFinite(Number(req.body?.elevation))
+              ? Number(req.body.elevation)
+              : 1.2,
+            metadata: sanitizeEntityMetadata(req.body?.metadata),
+          })
+          .returning();
+
+        return res.status(201).json({ entity: serializeEntity(created) });
+      } catch (err) {
+        console.error('SDK entity create error:', err);
+        return res.status(500).json({ error: 'Failed to create entity' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/v1/spaces/:id/entities/:entityId',
+    requireApiKeyOrSession,
+    async (req: ApiKeyRequest, res) => {
+      try {
+        const db = getDb();
+        const spaceId = String(req.params.id);
+        const entityId = String(req.params.entityId);
+
+        const existing = await db
+          .select()
+          .from(spatialEntities)
+          .where(
+            and(
+              eq(spatialEntities.id, entityId),
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.apiKeyUserId!)
+            )
+          )
+          .limit(1);
+
+        if (existing.length === 0) {
+          return res.status(404).json({ error: 'Entity not found' });
+        }
+
+        const patch: Record<string, unknown> = { updatedAt: new Date() };
+        if (typeof req.body?.name === 'string' && req.body.name.trim()) {
+          patch.name = req.body.name.trim().slice(0, 80);
+        }
+        if (req.body?.entityType !== undefined) {
+          patch.entityType = sanitizeEntityType(req.body.entityType);
+        }
+        if (req.body?.status !== undefined) {
+          patch.status = sanitizeEntityStatus(req.body.status);
+        }
+        if (req.body?.x !== undefined && Number.isFinite(Number(req.body.x))) {
+          patch.x = Number(req.body.x);
+        }
+        if (req.body?.z !== undefined && Number.isFinite(Number(req.body.z))) {
+          patch.z = Number(req.body.z);
+        }
+        if (
+          req.body?.elevation !== undefined &&
+          Number.isFinite(Number(req.body.elevation))
+        ) {
+          patch.elevation = Number(req.body.elevation);
+        }
+        if (req.body?.metadata !== undefined) {
+          patch.metadata = sanitizeEntityMetadata(req.body.metadata);
+        }
+
+        const [updated] = await db
+          .update(spatialEntities)
+          .set(patch)
+          .where(
+            and(
+              eq(spatialEntities.id, entityId),
+              eq(spatialEntities.spaceId, spaceId),
+              eq(spatialEntities.userId, req.apiKeyUserId!)
+            )
+          )
+          .returning();
+
+        return res.json({ entity: serializeEntity(updated) });
+      } catch (err) {
+        console.error('SDK entity patch error:', err);
+        return res.status(500).json({ error: 'Failed to update entity' });
       }
     }
   );

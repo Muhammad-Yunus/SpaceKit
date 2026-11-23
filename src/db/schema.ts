@@ -100,3 +100,27 @@ export const aiMessages = pgTable('ai_messages', {
   appliedDesignUpdate: boolean('applied_design_update').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const spatialEntities = pgTable('spatial_entities', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  spaceId: text('space_id')
+    .notNull()
+    .references(() => spaces.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  levelId: text('level_id').notNull().default('level_1'),
+  name: text('name').notNull(),
+  entityType: text('entity_type').notNull().default('sensor'),
+  status: text('status').notNull().default('online'),
+  x: doublePrecision('x').notNull().default(0),
+  z: doublePrecision('z').notNull().default(0),
+  elevation: doublePrecision('elevation').notNull().default(1.2),
+  metadata: jsonb('metadata')
+    .$type<Record<string, string | number | boolean>>()
+    .notNull()
+    .default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+

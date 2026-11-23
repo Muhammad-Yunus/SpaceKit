@@ -30,6 +30,8 @@ import {
   Menu,
   X,
   Trash2,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import { api, setAuthToken } from './lib/api.ts';
 import type {
@@ -37,6 +39,7 @@ import type {
   ProjectRecord,
   SpaceData,
   SpaceRecord,
+  SpatialEntityRecord,
 } from './types/space.ts';
 import { AuthScreen } from './components/AuthScreen.tsx';
 import { SpaceThumbnail } from './components/SpaceThumbnail.tsx';
@@ -49,10 +52,84 @@ import { AiSpatialChat } from './components/AiSpatialChat.tsx';
 import { DevelopersView } from './components/DevelopersView.tsx';
 import { ShareEmbedModal } from './components/ShareEmbedModal.tsx';
 import { ProjectsView, UsageView } from './components/ProjectsAndUsageViews.tsx';
+import { EntitiesManagerPanel } from './components/EntitiesManagerPanel.tsx';
 
 type TopNavTab = 'spaces' | 'projects' | 'developers' | 'usage';
 type SpaceSubTab = 'profile' | 'levels' | 'location' | 'entities' | 'projects' | 'settings';
 type EditModeTab = 'levels' | 'layout' | 'equipment' | 'map' | 'entities';
+
+function renderStatusBadge(
+  space: { status: string; unpublishedData?: SpaceData | null },
+  variant: 'light' | 'dark' | 'card' = 'light'
+) {
+  const isDraftStatus = space.status !== 'live';
+  const hasUnpublished = Boolean(space.unpublishedData);
+
+  if (variant === 'dark') {
+    if (isDraftStatus) {
+      return (
+        <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-slate-500/70 text-[11px] font-medium text-slate-200">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+          <span>Draft</span>
+        </span>
+      );
+    }
+    if (hasUnpublished) {
+      return (
+        <span
+          title="Live with unpublished draft changes"
+          className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-400/80 text-[11px] font-medium text-amber-200"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+          <span>Live</span>
+          <AlertTriangle className="w-3 h-3 text-amber-300" />
+        </span>
+      );
+    }
+    return (
+      <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-400/70 text-[11px] font-medium text-emerald-200">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+        <span>Live</span>
+      </span>
+    );
+  }
+
+  const positionClass =
+    variant === 'card' ? 'absolute top-2.5 right-2.5 shadow-sm' : 'hidden sm:inline-flex';
+
+  if (isDraftStatus) {
+    return (
+      <span
+        className={`${positionClass} inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-slate-300 text-[11px] font-medium text-slate-700`}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+        <span>Draft</span>
+      </span>
+    );
+  }
+
+  if (hasUnpublished) {
+    return (
+      <span
+        title="Live with unpublished draft changes"
+        className={`${positionClass} inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-amber-400 text-[11px] font-medium text-[#1f242c]`}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+        <span>Live</span>
+        <AlertTriangle className="w-3 h-3 text-amber-500" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={`${positionClass} inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-emerald-500 text-[11px] font-medium text-[#1f242c]`}
+    >
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+      <span>Live</span>
+    </span>
+  );
+}
 
 function formatRelativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -82,6 +159,9 @@ export default function App() {
   const [filterMode, setFilterMode] = useState<'all' | 'live' | 'geolocated'>('all');
   const [sortMode, setSortMode] = useState<'updated' | 'sqft' | 'views'>('updated');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [workspaceNameInput, setWorkspaceNameInput] = useState('');
+  const [savingWorkspaceName, setSavingWorkspaceName] = useState(false);
 
   // Active space & view/edit states
   const [activeSpace, setActiveSpace] = useState<SpaceRecord | null>(null);
@@ -90,6 +170,64 @@ export default function App() {
   const [editMode, setEditMode] = useState<EditModeTab>('layout');
   const [editMenuOpen, setEditMenuOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Spatial entities state
+  const [entities, setEntities] = useState<SpatialEntityRecord[]>([]);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [pickedFloorPoint, setPickedFloorPoint] = useState<{ x: number; z: number } | null>(null);
+
+  // Public embed mode (?space=<id>&embed=1)
+  const initialQuery = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return {
+      spaceId: params.get('space')?.trim() || null,
+      isEmbed: params.get('embed') === '1',
+    };
+  }, []);
+  const deepLinkHandledRef = useRef(false);
+
+  const [publicEmbed, setPublicEmbed] = useState<{
+    loading: boolean;
+    error: string | null;
+    space: {
+      id: string;
+      name: string;
+      description: string;
+      status: string;
+      tags: string[];
+      sqft: number;
+      views: number;
+      complexity: number;
+      address: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      data: SpaceData;
+      updatedAt: string;
+    } | null;
+    entities: SpatialEntityRecord[];
+  }>({
+    loading: Boolean(initialQuery.isEmbed && initialQuery.spaceId),
+    error: null,
+    space: null,
+    entities: [],
+  });
+  const [embedSelectedEntityId, setEmbedSelectedEntityId] = useState<string | null>(null);
+
+  // Global notice banner
+  const [notice, setNotice] = useState<{
+    type: 'error' | 'success';
+    message: string;
+  } | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+  const showNotice = useCallback((type: 'error' | 'success', message: string) => {
+    setNotice({ type, message });
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNotice(null);
+    }, 4500);
+  }, []);
 
   // Draft state for editor
   const [draftData, setDraftData] = useState<SpaceData | null>(null);
@@ -106,9 +244,11 @@ export default function App() {
   const [addingTag, setAddingTag] = useState(false);
   const [tagInput, setTagInput] = useState('');
 
-  // Profile inline edit
+  // Profile inline edit & settings confirmation
   const [editingName, setEditingName] = useState('');
   const [editingDesc, setEditingDesc] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [confirmDeleteSpace, setConfirmDeleteSpace] = useState(false);
 
   const snapshotFnRef = useRef<(() => string | null) | null>(null);
 
@@ -122,6 +262,44 @@ export default function App() {
       .finally(() => setHealthChecked(true));
   }, []);
 
+  useEffect(() => {
+    if (!initialQuery.isEmbed || !initialQuery.spaceId) return;
+    let cancelled = false;
+    setPublicEmbed((prev) => ({ ...prev, loading: true, error: null }));
+    api
+      .getPublicSpace(initialQuery.spaceId)
+      .then((res) => {
+        if (cancelled) return;
+        setPublicEmbed({
+          loading: false,
+          error: null,
+          space: res.space,
+          entities: res.entities,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPublicEmbed({
+          loading: false,
+          error:
+            err instanceof Error
+              ? err.message
+              : 'This public 3D space is unavailable or set to Draft.',
+          space: null,
+          entities: [],
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialQuery]);
+
+  useEffect(() => {
+    if (user) {
+      setWorkspaceNameInput(user.workspaceName);
+    }
+  }, [user]);
+
   const loadWorkspaceData = useCallback(async () => {
     setLoadingSpaces(true);
     try {
@@ -131,12 +309,15 @@ export default function App() {
       ]);
       setSpaces(spRes.spaces);
       setProjects(prRes.projects);
-    } catch {
-      // handled on auth/UI
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to load workspace data.'
+      );
     } finally {
       setLoadingSpaces(false);
     }
-  }, []);
+  }, [showNotice]);
 
   useEffect(() => {
     if (user) {
@@ -144,25 +325,58 @@ export default function App() {
     }
   }, [user, loadWorkspaceData]);
 
-  const openSpace = async (space: SpaceRecord) => {
-    setActiveSpace(space);
-    setSpaceSubTab('profile');
-    setIsEditing(false);
-    setDraftData(space.unpublishedData ?? space.data);
-    setEditingName(space.name);
-    setEditingDesc(space.description);
+  const openSpace = useCallback(
+    async (space: SpaceRecord) => {
+      setActiveSpace(space);
+      setSpaceSubTab('profile');
+      setIsEditing(false);
+      setConfirmDeleteSpace(false);
+      setDraftData(space.unpublishedData ?? space.data);
+      setEditingName(space.name);
+      setEditingDesc(space.description);
+      setEntities([]);
+      setSelectedEntityId(null);
+      setPickedFloorPoint(null);
 
-    try {
-      const res = await api.getSpace(space.id);
-      setActiveSpace(res.space);
-      setDraftData(res.space.unpublishedData ?? res.space.data);
-      setSpaces((prev) =>
-        prev.map((s) => (s.id === res.space.id ? res.space : s))
-      );
-    } catch {
-      // keep optimistic space
+      try {
+        const [spaceRes, entitiesRes] = await Promise.all([
+          api.getSpace(space.id),
+          api.listEntities(space.id),
+        ]);
+        setActiveSpace(spaceRes.space);
+        setDraftData(spaceRes.space.unpublishedData ?? spaceRes.space.data);
+        setEditingName(spaceRes.space.name);
+        setEditingDesc(spaceRes.space.description);
+        setEntities(entitiesRes.entities);
+        setSpaces((prev) =>
+          prev.map((s) => (s.id === spaceRes.space.id ? spaceRes.space : s))
+        );
+      } catch (err) {
+        showNotice(
+          'error',
+          err instanceof Error ? err.message : 'Failed to refresh space details.'
+        );
+      }
+    },
+    [showNotice]
+  );
+
+  useEffect(() => {
+    if (
+      !user ||
+      initialQuery.isEmbed ||
+      !initialQuery.spaceId ||
+      deepLinkHandledRef.current ||
+      spaces.length === 0
+    ) {
+      return;
     }
-  };
+    const target = spaces.find((s) => s.id === initialQuery.spaceId);
+    if (target) {
+      deepLinkHandledRef.current = true;
+      openSpace(target);
+    }
+  }, [user, initialQuery, spaces, openSpace]);
 
   const captureThumbnailIfNeeded = async (space: SpaceRecord) => {
     if (!snapshotFnRef.current) return;
@@ -182,6 +396,10 @@ export default function App() {
   const handleDraftChange = (nextData: SpaceData) => {
     setDraftData(nextData);
     if (!activeSpace) return;
+    if (activeSpace.locked) {
+      showNotice('error', 'This space is locked. Unlock it before saving edits.');
+      return;
+    }
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
@@ -195,8 +413,11 @@ export default function App() {
         setSpaces((prev) =>
           prev.map((s) => (s.id === res.space.id ? res.space : s))
         );
-      } catch {
-        // ignore if locked
+      } catch (err) {
+        showNotice(
+          'error',
+          err instanceof Error ? err.message : 'Failed to sync draft changes.'
+        );
       } finally {
         setIsSavingDraft(false);
       }
@@ -205,33 +426,60 @@ export default function App() {
 
   const handlePublish = async () => {
     if (!activeSpace) return;
-    const res = await api.publishSpace(activeSpace.id);
-    setActiveSpace(res.space);
-    setDraftData(res.space.data);
-    setSpaces((prev) =>
-      prev.map((s) => (s.id === res.space.id ? res.space : s))
-    );
+    try {
+      const res = await api.publishSpace(activeSpace.id);
+      setActiveSpace(res.space);
+      setDraftData(res.space.data);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === res.space.id ? res.space : s))
+      );
+      showNotice('success', 'Published latest changes live.');
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to publish changes.'
+      );
+    }
   };
 
   const handleDiscard = async () => {
     if (!activeSpace) return;
-    const res = await api.discardSpace(activeSpace.id);
-    setActiveSpace(res.space);
-    setDraftData(res.space.data);
-    setSpaces((prev) =>
-      prev.map((s) => (s.id === res.space.id ? res.space : s))
-    );
+    try {
+      const res = await api.discardSpace(activeSpace.id);
+      setActiveSpace(res.space);
+      setDraftData(res.space.data);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === res.space.id ? res.space : s))
+      );
+      showNotice('success', 'Discarded unpublished draft changes.');
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to discard changes.'
+      );
+    }
   };
 
   const handleToggleLock = async () => {
     if (!activeSpace) return;
-    const res = await api.updateSpace(activeSpace.id, {
-      locked: !activeSpace.locked,
-    });
-    setActiveSpace(res.space);
-    setSpaces((prev) =>
-      prev.map((s) => (s.id === res.space.id ? res.space : s))
-    );
+    try {
+      const res = await api.updateSpace(activeSpace.id, {
+        locked: !activeSpace.locked,
+      });
+      setActiveSpace(res.space);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === res.space.id ? res.space : s))
+      );
+      showNotice(
+        'success',
+        res.space.locked ? 'Space locked against edits.' : 'Space unlocked.'
+      );
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to update lock status.'
+      );
+    }
   };
 
   const handleAddTag = async (e: React.FormEvent) => {
@@ -240,23 +488,56 @@ export default function App() {
     const nextTags = Array.from(
       new Set([...(activeSpace.tags || []), tagInput.trim()])
     );
-    const res = await api.updateSpace(activeSpace.id, { tags: nextTags });
-    setActiveSpace(res.space);
-    setSpaces((prev) =>
-      prev.map((s) => (s.id === res.space.id ? res.space : s))
-    );
-    setTagInput('');
-    setAddingTag(false);
+    try {
+      const res = await api.updateSpace(activeSpace.id, { tags: nextTags });
+      setActiveSpace(res.space);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === res.space.id ? res.space : s))
+      );
+      setTagInput('');
+      setAddingTag(false);
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to add tag.'
+      );
+    }
   };
 
   const handleRemoveTag = async (tag: string) => {
     if (!activeSpace) return;
     const nextTags = activeSpace.tags.filter((t) => t !== tag);
-    const res = await api.updateSpace(activeSpace.id, { tags: nextTags });
-    setActiveSpace(res.space);
-    setSpaces((prev) =>
-      prev.map((s) => (s.id === res.space.id ? res.space : s))
-    );
+    try {
+      const res = await api.updateSpace(activeSpace.id, { tags: nextTags });
+      setActiveSpace(res.space);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === res.space.id ? res.space : s))
+      );
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to remove tag.'
+      );
+    }
+  };
+
+  const handleSaveWorkspaceName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceNameInput.trim()) return;
+    setSavingWorkspaceName(true);
+    try {
+      const res = await api.updateWorkspaceName(workspaceNameInput.trim());
+      setUser(res.user);
+      setWorkspaceMenuOpen(false);
+      showNotice('success', 'Workspace name updated.');
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Failed to rename workspace.'
+      );
+    } finally {
+      setSavingWorkspaceName(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -268,7 +549,11 @@ export default function App() {
     setAuthToken(null);
     setUser(null);
     setSpaces([]);
+    setProjects([]);
+    setEntities([]);
     setActiveSpace(null);
+    setWorkspaceMenuOpen(false);
+    setUserMenuOpen(false);
   };
 
   const filteredSpaces = useMemo(() => {
@@ -300,6 +585,94 @@ export default function App() {
     () => spaces.reduce((acc, s) => acc + s.views, 0),
     [spaces]
   );
+
+  const noticeBanner = notice ? (
+    <div
+      className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-md shadow-lg border text-xs font-medium flex items-center gap-2 ${
+        notice.type === 'error'
+          ? 'bg-red-50 border-red-300 text-red-700'
+          : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+      }`}
+    >
+      {notice.type === 'error' ? (
+        <AlertCircle className="w-4 h-4 shrink-0" />
+      ) : (
+        <CheckCircle2 className="w-4 h-4 shrink-0" />
+      )}
+      <span>{notice.message}</span>
+      <button
+        type="button"
+        onClick={() => setNotice(null)}
+        className="ml-1 opacity-70 hover:opacity-100"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  ) : null;
+
+  // Public interactive 3D embed view (?space=<id>&embed=1)
+  if (initialQuery.isEmbed && initialQuery.spaceId) {
+    if (publicEmbed.loading) {
+      return (
+        <div className="h-screen w-screen flex items-center justify-center bg-[#cfd7df] text-xs text-slate-700">
+          Loading SpaceKit 3D scene...
+        </div>
+      );
+    }
+    if (publicEmbed.error || !publicEmbed.space) {
+      return (
+        <div className="h-screen w-screen flex items-center justify-center bg-[#f4f6f9] p-6">
+          <div className="bg-white border border-[#e5e8ec] rounded-lg p-6 max-w-md text-center space-y-3">
+            <div className="w-10 h-10 rounded bg-[#1f242c] text-white flex items-center justify-center font-bold mx-auto">
+              S
+            </div>
+            <h1 className="text-base font-semibold text-[#1f242c]">
+              3D Embed Unavailable
+            </h1>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {publicEmbed.error ||
+                'This space does not exist or is currently set to Draft.'}
+            </p>
+            <a
+              href="/"
+              className="inline-block px-3.5 py-1.5 bg-[#1f242c] text-white rounded-md text-xs font-medium"
+            >
+              Open SpaceKit Console
+            </a>
+          </div>
+        </div>
+      );
+    }
+
+    const embedSpace = publicEmbed.space;
+    return (
+      <div className="h-screen w-screen relative bg-[#cfd7df] overflow-hidden">
+        <Space3DViewer
+          data={embedSpace.data}
+          entities={publicEmbed.entities}
+          selectedEntityId={embedSelectedEntityId}
+          onSelectEntity={setEmbedSelectedEntityId}
+        />
+        <div className="absolute top-3 left-3 z-20 bg-white/95 backdrop-blur border border-[#e5e8ec] rounded-md px-3 py-2 shadow-sm flex items-center gap-3">
+          <div className="w-6 h-6 rounded bg-[#1f242c] text-white flex items-center justify-center text-xs font-bold shrink-0">
+            S
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-[#1f242c] truncate max-w-[200px]">
+              {embedSpace.name}
+            </div>
+            <div className="text-[10px] text-slate-500 tabular-nums">
+              {embedSpace.sqft.toLocaleString()} sqft · {embedSpace.data.levels.length}{' '}
+              {embedSpace.data.levels.length === 1 ? 'level' : 'levels'}
+              {publicEmbed.entities.length > 0
+                ? ` · ${publicEmbed.entities.length} entities`
+                : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!healthChecked) {
     return (
@@ -384,11 +757,7 @@ export default function App() {
 
           {/* Right controls */}
           <div className="flex items-center gap-2.5 shrink-0">
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-400/80 text-[11px] font-medium text-amber-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              <span>{activeSpace.status === 'live' ? 'Live' : 'Draft'}</span>
-              <AlertTriangle className="w-3 h-3 text-amber-300" />
-            </span>
+            {renderStatusBadge(activeSpace, 'dark')}
 
             <button
               type="button"
@@ -451,6 +820,7 @@ export default function App() {
               setSpaces((prev) =>
                 prev.map((s) => (s.id === res.space.id ? res.space : s))
               );
+              showNotice('success', 'Geolocation saved to PostgreSQL.');
             }}
             onFinishWizard={() => {
               setIsEditing(false);
@@ -459,64 +829,187 @@ export default function App() {
           />
         )}
 
-        {(editMode === 'levels' || editMode === 'entities') && (
-          <div className="flex-1 flex items-center justify-center bg-[#eef2f6] p-6">
-            <div className="bg-white border border-[#e5e8ec] rounded-lg p-6 max-w-md w-full space-y-4 text-xs">
-              <h3 className="text-base font-semibold text-[#1f242c]">
-                {editMode === 'levels' ? 'Stack building levels' : 'Manage spatial entities'}
-              </h3>
-              {editMode === 'levels' ? (
-                <>
-                  <p className="text-slate-600">
-                    Add multi-story floor elevations or import a 2D CAD floor plan for each building level.
+        {editMode === 'levels' && (
+          <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden bg-[#eef2f6]">
+            <aside className="w-full lg:w-[380px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-[#e5e8ec] p-5 overflow-y-auto space-y-4 text-xs">
+              <div className="flex items-center justify-between pb-3 border-b border-[#eef1f5]">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#1f242c]">
+                    Stack building levels
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Configure multi-story elevations, floor heights, and names.
                   </p>
-                  <div className="space-y-2">
-                    {currentData.levels.map((lvl, i) => (
-                      <div
-                        key={lvl.id}
-                        className="flex items-center justify-between p-2.5 border border-[#e5e8ec] rounded-md"
-                      >
-                        <span className="font-medium text-[#1f242c]">{lvl.name}</span>
-                        <span className="text-slate-500 tabular-nums">
-                          +{lvl.elevation}m · {lvl.walls.length} walls
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const idx = currentData.levels.length + 1;
-                      handleDraftChange({
-                        ...currentData,
-                        levels: [
-                          ...currentData.levels,
-                          {
-                            id: `level_${idx}`,
-                            name: `Level ${idx}`,
-                            elevation: (idx - 1) * 3.0,
-                            floorHeight: 2.8,
-                            walls: [],
-                            doors: [],
-                            windows: [],
-                            rooms: [],
-                            equipment: [],
-                            annotations: [],
-                            stairs: [],
-                          },
-                        ],
-                      });
-                    }}
-                    className="w-full py-2 bg-[#1f242c] text-white rounded-md font-medium"
+                </div>
+                <button
+                  type="button"
+                  disabled={activeSpace.locked}
+                  onClick={() => {
+                    const idx = currentData.levels.length + 1;
+                    const maxElev = currentData.levels.reduce(
+                      (m, l) => Math.max(m, l.elevation + (l.floorHeight || 2.8)),
+                      0
+                    );
+                    handleDraftChange({
+                      ...currentData,
+                      levels: [
+                        ...currentData.levels,
+                        {
+                          id: `level_${Date.now().toString(36)}`,
+                          name: `Level ${idx}`,
+                          elevation: Number(maxElev.toFixed(2)),
+                          floorHeight: 2.8,
+                          walls: [],
+                          doors: [],
+                          windows: [],
+                          rooms: [],
+                          equipment: [],
+                          annotations: [],
+                          stairs: [],
+                        },
+                      ],
+                    });
+                  }}
+                  className="px-2.5 py-1.5 bg-[#1f242c] hover:bg-[#2c333e] text-white rounded-md font-medium shrink-0 disabled:opacity-45"
+                >
+                  + Add level
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {currentData.levels.map((lvl, idx) => (
+                  <div
+                    key={lvl.id}
+                    className="p-3 border border-[#e5e8ec] rounded-md space-y-2.5 bg-[#f8fafc]"
                   >
-                    + Add Level {currentData.levels.length + 1}
-                  </button>
-                </>
-              ) : (
-                <p className="text-slate-600 leading-relaxed">
-                  Connect live IoT sensors, occupancy beacons, or asset feeds via the SpaceKit REST &amp; SDK API in the <strong>Developers</strong> tab.
-                </p>
-              )}
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        type="text"
+                        value={lvl.name}
+                        disabled={activeSpace.locked}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          handleDraftChange({
+                            ...currentData,
+                            levels: currentData.levels.map((item) =>
+                              item.id === lvl.id ? { ...item, name: val } : item
+                            ),
+                          });
+                        }}
+                        className="font-semibold text-[#1f242c] bg-white border border-[#d6dce3] rounded px-2 py-1 flex-1 min-w-0"
+                      />
+                      {currentData.levels.length > 1 && (
+                        <button
+                          type="button"
+                          disabled={activeSpace.locked}
+                          onClick={() => {
+                            handleDraftChange({
+                              ...currentData,
+                              levels: currentData.levels.filter(
+                                (item) => item.id !== lvl.id
+                              ),
+                            });
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-40"
+                          title={`Delete ${lvl.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] text-slate-500 mb-0.5">
+                          Elevation (m)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.2"
+                          disabled={activeSpace.locked}
+                          value={lvl.elevation}
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0;
+                            handleDraftChange({
+                              ...currentData,
+                              levels: currentData.levels.map((item) =>
+                                item.id === lvl.id
+                                  ? { ...item, elevation: val }
+                                  : item
+                              ),
+                            });
+                          }}
+                          className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-500 mb-0.5">
+                          Wall height (m)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="1.5"
+                          max="12"
+                          disabled={activeSpace.locked}
+                          value={lvl.floorHeight || 2.8}
+                          onChange={(e) => {
+                            const val = Math.max(
+                              1.5,
+                              Number(e.target.value) || 2.8
+                            );
+                            handleDraftChange({
+                              ...currentData,
+                              levels: currentData.levels.map((item) =>
+                                item.id === lvl.id
+                                  ? { ...item, floorHeight: val }
+                                  : item
+                              ),
+                            });
+                          }}
+                          className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                      Floor #{idx + 1} · {lvl.walls.length} walls ·{' '}
+                      {lvl.doors.length} doors · {lvl.equipment.length} equipment
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </aside>
+
+            <div className="relative flex-1 min-h-[320px] bg-[#cfd7df]">
+              <Space3DViewer data={currentData} entities={entities} />
+            </div>
+          </div>
+        )}
+
+        {editMode === 'entities' && (
+          <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden bg-[#eef2f6]">
+            <aside className="w-full lg:w-[380px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-[#e5e8ec] p-5 overflow-y-auto">
+              <EntitiesManagerPanel
+                spaceId={activeSpace.id}
+                levels={currentData.levels}
+                entities={entities}
+                selectedEntityId={selectedEntityId}
+                onSelectEntity={setSelectedEntityId}
+                onEntitiesChange={setEntities}
+                pickedPoint={pickedFloorPoint}
+                locked={activeSpace.locked}
+                onError={(msg) => showNotice('error', msg)}
+              />
+            </aside>
+            <div className="relative flex-1 min-h-[320px] bg-[#cfd7df]">
+              <Space3DViewer
+                data={currentData}
+                entities={entities}
+                selectedEntityId={selectedEntityId}
+                onSelectEntity={setSelectedEntityId}
+                onPickFloorPoint={(x, z) => setPickedFloorPoint({ x, z })}
+              />
             </div>
           </div>
         )}
@@ -552,6 +1045,7 @@ export default function App() {
           space={activeSpace}
           onClose={() => setShareOpen(false)}
         />
+        {noticeBanner}
       </div>
     );
   }
@@ -595,11 +1089,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0 relative">
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-400 bg-white text-[11px] font-medium text-[#1f242c]">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-              <span>{activeSpace.status === 'live' ? 'Live' : 'Draft'}</span>
-              <AlertTriangle className="w-3 h-3 text-amber-500" />
-            </span>
+            {renderStatusBadge(activeSpace, 'light')}
 
             <button
               type="button"
@@ -745,7 +1235,7 @@ export default function App() {
                 { id: 'profile', label: 'Profile', icon: Info },
                 { id: 'levels', label: 'Levels', icon: Layers },
                 { id: 'location', label: 'Location', icon: Globe },
-                { id: 'entities', label: 'Entities', icon: Database, soon: true },
+                { id: 'entities', label: 'Entities', icon: Database, count: entities.length },
               ].map((nav) => {
                 const Icon = nav.icon;
                 const active = spaceSubTab === nav.id;
@@ -753,7 +1243,6 @@ export default function App() {
                   <button
                     key={nav.id}
                     type="button"
-                    disabled={nav.soon}
                     onClick={() => {
                       setSpaceSubTab(nav.id as SpaceSubTab);
                       setMobileSidebarOpen(false);
@@ -761,8 +1250,6 @@ export default function App() {
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-colors ${
                       active
                         ? 'bg-[#eef2f5] text-[#1f242c] font-medium'
-                        : nav.soon
-                        ? 'text-slate-300 cursor-not-allowed'
                         : 'text-[#3b434f] hover:bg-slate-50'
                     }`}
                   >
@@ -770,9 +1257,9 @@ export default function App() {
                       <Icon className="w-4 h-4" />
                       <span>{nav.label}</span>
                     </span>
-                    {nav.soon && (
-                      <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
-                        Soon
+                    {typeof nav.count === 'number' && nav.count > 0 && (
+                      <span className="text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded tabular-nums">
+                        {nav.count}
                       </span>
                     )}
                   </button>
@@ -847,6 +1334,7 @@ export default function App() {
                 setSpaces((prev) =>
                   prev.map((s) => (s.id === res.space.id ? res.space : s))
                 );
+                showNotice('success', 'Geolocation saved to PostgreSQL.');
               }}
             />
           ) : (
@@ -1040,6 +1528,20 @@ export default function App() {
                   </div>
                 )}
 
+                {spaceSubTab === 'entities' && (
+                  <EntitiesManagerPanel
+                    spaceId={activeSpace.id}
+                    levels={viewData.levels}
+                    entities={entities}
+                    selectedEntityId={selectedEntityId}
+                    onSelectEntity={setSelectedEntityId}
+                    onEntitiesChange={setEntities}
+                    pickedPoint={pickedFloorPoint}
+                    locked={activeSpace.locked}
+                    onError={(msg) => showNotice('error', msg)}
+                  />
+                )}
+
                 {spaceSubTab === 'projects' && (
                   <div className="space-y-4 text-xs">
                     <h2 className="text-sm font-medium text-[#1f242c] pb-3 border-b border-[#eef1f5]">
@@ -1048,13 +1550,27 @@ export default function App() {
                     <select
                       value={activeSpace.projectId || ''}
                       onChange={async (e) => {
-                        const res = await api.updateSpace(activeSpace.id, {
-                          projectId: e.target.value || null,
-                        });
-                        setActiveSpace(res.space);
-                        setSpaces((prev) =>
-                          prev.map((s) => (s.id === res.space.id ? res.space : s))
-                        );
+                        try {
+                          const res = await api.updateSpace(activeSpace.id, {
+                            projectId: e.target.value || null,
+                          });
+                          setActiveSpace(res.space);
+                          setSpaces((prev) =>
+                            prev.map((s) => (s.id === res.space.id ? res.space : s))
+                          );
+                          api
+                            .listProjects()
+                            .then((pr) => setProjects(pr.projects))
+                            .catch(() => {});
+                          showNotice('success', 'Project assignment updated.');
+                        } catch (err) {
+                          showNotice(
+                            'error',
+                            err instanceof Error
+                              ? err.message
+                              : 'Failed to assign project.'
+                          );
+                        }
                       }}
                       className="w-full border border-[#d6dce3] rounded-md px-3 py-2"
                     >
@@ -1095,38 +1611,143 @@ export default function App() {
                         className="w-full border border-[#d6dce3] rounded-md px-3 py-2"
                       />
                     </div>
+
+                    <div>
+                      <label className="block font-medium text-slate-600 mb-1">
+                        Visibility status
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(['live', 'draft'] as const).map((st) => (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const res = await api.updateSpace(
+                                  activeSpace.id,
+                                  { status: st }
+                                );
+                                setActiveSpace(res.space);
+                                setSpaces((prev) =>
+                                  prev.map((s) =>
+                                    s.id === res.space.id ? res.space : s
+                                  )
+                                );
+                                showNotice(
+                                  'success',
+                                  st === 'live'
+                                    ? 'Space is now Live for public embeds.'
+                                    : 'Space switched to Draft.'
+                                );
+                              } catch (err) {
+                                showNotice(
+                                  'error',
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Failed to update status.'
+                                );
+                              }
+                            }}
+                            className={`py-2 px-3 rounded-md border font-medium capitalize transition-colors ${
+                              activeSpace.status === st
+                                ? 'bg-[#1f242c] text-white border-[#1f242c]'
+                                : 'bg-white text-slate-600 border-[#d6dce3] hover:bg-slate-50'
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <button
                       type="button"
+                      disabled={savingSettings}
                       onClick={async () => {
-                        const res = await api.updateSpace(activeSpace.id, {
-                          name: editingName,
-                          description: editingDesc,
-                        });
-                        setActiveSpace(res.space);
-                        setSpaces((prev) =>
-                          prev.map((s) => (s.id === res.space.id ? res.space : s))
-                        );
+                        setSavingSettings(true);
+                        try {
+                          const res = await api.updateSpace(activeSpace.id, {
+                            name: editingName,
+                            description: editingDesc,
+                          });
+                          setActiveSpace(res.space);
+                          setSpaces((prev) =>
+                            prev.map((s) =>
+                              s.id === res.space.id ? res.space : s
+                            )
+                          );
+                          showNotice('success', 'Space settings saved.');
+                        } catch (err) {
+                          showNotice(
+                            'error',
+                            err instanceof Error
+                              ? err.message
+                              : 'Failed to save space settings.'
+                          );
+                        } finally {
+                          setSavingSettings(false);
+                        }
                       }}
-                      className="w-full py-2 bg-[#1f242c] text-white rounded-md font-medium"
+                      className="w-full py-2 bg-[#1f242c] text-white rounded-md font-medium disabled:opacity-50"
                     >
-                      Save changes
+                      {savingSettings ? 'Saving...' : 'Save changes'}
                     </button>
 
                     <div className="pt-4 border-t border-[#eef1f5]">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await api.deleteSpace(activeSpace.id);
-                          setSpaces((prev) =>
-                            prev.filter((s) => s.id !== activeSpace.id)
-                          );
-                          setActiveSpace(null);
-                        }}
-                        className="w-full py-2 bg-[#dc3545] hover:bg-[#c82333] text-white rounded-md font-medium flex items-center justify-center gap-1.5"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete space permanently</span>
-                      </button>
+                      {confirmDeleteSpace ? (
+                        <div className="p-3 border border-red-200 bg-red-50 rounded-md space-y-2">
+                          <p className="text-[11px] font-medium text-red-700">
+                            Permanently delete &ldquo;{activeSpace.name}&rdquo; and all
+                            its 3D geometry &amp; entities?
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await api.deleteSpace(activeSpace.id);
+                                  setSpaces((prev) =>
+                                    prev.filter((s) => s.id !== activeSpace.id)
+                                  );
+                                  setActiveSpace(null);
+                                  setConfirmDeleteSpace(false);
+                                  api
+                                    .listProjects()
+                                    .then((pr) => setProjects(pr.projects))
+                                    .catch(() => {});
+                                  showNotice('success', 'Space deleted.');
+                                } catch (err) {
+                                  showNotice(
+                                    'error',
+                                    err instanceof Error
+                                      ? err.message
+                                      : 'Failed to delete space.'
+                                  );
+                                }
+                              }}
+                              className="flex-1 py-1.5 bg-[#dc3545] hover:bg-[#c82333] text-white rounded font-medium"
+                            >
+                              Confirm delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteSpace(false)}
+                              className="flex-1 py-1.5 bg-white border border-[#d6dce3] text-slate-700 rounded font-medium"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteSpace(true)}
+                          className="w-full py-2 bg-[#dc3545] hover:bg-[#c82333] text-white rounded-md font-medium flex items-center justify-center gap-1.5"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete space permanently</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1136,6 +1757,14 @@ export default function App() {
               <div className="relative flex-1 min-h-[320px] bg-[#cfd7df]">
                 <Space3DViewer
                   data={viewData}
+                  entities={entities}
+                  selectedEntityId={selectedEntityId}
+                  onSelectEntity={setSelectedEntityId}
+                  onPickFloorPoint={
+                    spaceSubTab === 'entities'
+                      ? (x, z) => setPickedFloorPoint({ x, z })
+                      : undefined
+                  }
                   onSnapshotReady={(fn) => {
                     snapshotFnRef.current = fn;
                   }}
@@ -1173,6 +1802,7 @@ export default function App() {
           space={activeSpace}
           onClose={() => setShareOpen(false)}
         />
+        {noticeBanner}
       </div>
     );
   }
@@ -1196,19 +1826,94 @@ export default function App() {
               <span>SpaceKit</span>
             </button>
 
-            <div className="hidden sm:flex items-center gap-2.5 pl-3 border-l border-[#e5e8ec]">
-              <div className="w-8 h-8 rounded border border-[#e5e8ec] bg-[#f8fafc] flex items-center justify-center text-slate-600">
-                <Building2 className="w-4 h-4" />
-              </div>
-              <div className="text-left leading-tight">
-                <div className="text-xs font-medium text-[#1f242c] whitespace-nowrap">
-                  {user.workspaceName}
+            <div className="relative hidden sm:block pl-3 border-l border-[#e5e8ec]">
+              <button
+                type="button"
+                onClick={() => setWorkspaceMenuOpen((v) => !v)}
+                className="flex items-center gap-2.5 px-2 py-1 rounded-md hover:bg-slate-50 transition-colors"
+                title="Switch or rename workspace"
+              >
+                <div className="w-8 h-8 rounded border border-[#e5e8ec] bg-[#f8fafc] flex items-center justify-center text-slate-600">
+                  <Building2 className="w-4 h-4" />
                 </div>
-                <div className="text-[11px] text-slate-400 whitespace-nowrap">
-                  Your floor plans
+                <div className="text-left leading-tight">
+                  <div className="text-xs font-medium text-[#1f242c] whitespace-nowrap">
+                    {user.workspaceName}
+                  </div>
+                  <div className="text-[11px] text-slate-400 whitespace-nowrap">
+                    Your floor plans
+                  </div>
                 </div>
-              </div>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" />
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" />
+              </button>
+
+              {workspaceMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20"
+                    onClick={() => setWorkspaceMenuOpen(false)}
+                  />
+                  <div className="absolute left-3 top-12 z-30 w-64 bg-white border border-[#e5e8ec] rounded-lg shadow-xl p-3 space-y-3 text-xs">
+                    <form onSubmit={handleSaveWorkspaceName} className="space-y-1.5">
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                        Workspace name
+                      </label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          required
+                          value={workspaceNameInput}
+                          onChange={(e) => setWorkspaceNameInput(e.target.value)}
+                          className="flex-1 min-w-0 border border-[#d6dce3] rounded px-2 py-1 text-xs"
+                        />
+                        <button
+                          type="submit"
+                          disabled={savingWorkspaceName}
+                          className="px-2.5 py-1 bg-[#1f242c] text-white rounded font-medium disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </form>
+                    <div className="pt-2 border-t border-[#eef1f5] space-y-1">
+                      {(
+                        [
+                          { id: 'spaces', label: 'All spaces' },
+                          { id: 'projects', label: 'Projects' },
+                          { id: 'developers', label: 'Developers & SDK' },
+                          { id: 'usage', label: 'Workspace usage' },
+                        ] as const
+                      ).map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            setTopTab(item.id);
+                            setWorkspaceMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 ${
+                            topTab === item.id
+                              ? 'font-semibold text-[#1f242c] bg-[#f8fafc]'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="pt-2 border-t border-[#eef1f5]">
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="w-full text-left px-2 py-1.5 rounded text-red-600 hover:bg-red-50 flex items-center gap-2"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        <span>Sign out</span>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -1439,11 +2144,7 @@ export default function App() {
                       {/* Thumbnail Box */}
                       <div className="relative aspect-[16/10] rounded-lg overflow-hidden bg-[#cfd7df] border border-[#e5e8ec]/60">
                         <SpaceThumbnail space={space} />
-                        <span className="absolute top-2.5 right-2.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-amber-400 text-[11px] font-medium text-[#1f242c] shadow-sm">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                          <span>{space.status === 'live' ? 'Live' : 'Draft'}</span>
-                          <AlertTriangle className="w-3 h-3 text-amber-500" />
-                        </span>
+                        {renderStatusBadge(space, 'card')}
                       </div>
 
                       {/* Open Card Metadata matching Screenshot 1 */}
@@ -1501,7 +2202,12 @@ export default function App() {
         )}
 
         {topTab === 'projects' && (
-          <ProjectsView spaces={spaces} onOpenSpace={openSpace} />
+          <ProjectsView
+            spaces={spaces}
+            projects={projects}
+            onProjectsChange={setProjects}
+            onOpenSpace={openSpace}
+          />
         )}
         {topTab === 'developers' && <DevelopersView spaces={spaces} />}
         {topTab === 'usage' && <UsageView />}
@@ -1516,6 +2222,7 @@ export default function App() {
           openSpace(created);
         }}
       />
+      {noticeBanner}
     </div>
   );
 }

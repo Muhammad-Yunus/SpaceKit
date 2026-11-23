@@ -51,7 +51,19 @@ export const CadUploadModal: React.FC<CadUploadModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setName('');
+      setDescription('');
+      setPromptHint('');
+      setFile(null);
+      setPreviewUrl(null);
+      setTab('cad');
+      setAgentTrace(null);
+      setCompletedSpace(null);
+      setError(null);
+      return;
+    }
     setAgentTrace(null);
     setCompletedSpace(null);
     setError(null);

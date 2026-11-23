@@ -58,6 +58,7 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
     draftData.levels[0]?.equipment[0]?.id ?? null
   );
   const [rightTab, setRightTab] = useState<'properties' | 'add'>('properties');
+  const [catalogSearch, setCatalogSearch] = useState('');
   const [listExpanded, setListExpanded] = useState(true);
   const [lockRatio, setLockRatio] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -67,6 +68,16 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
 
   const level = draftData.levels[activeLevelIdx] || draftData.levels[0];
   const selectedItem = level.equipment.find((e) => e.id === selectedId) ?? null;
+
+  const filteredCatalog = EQUIPMENT_CATALOG.filter((item) =>
+    item.name.toLowerCase().includes(catalogSearch.trim().toLowerCase())
+  );
+
+  const handleLevelChange = (nextIdx: number) => {
+    setActiveLevelIdx(nextIdx);
+    const nextLvl = draftData.levels[nextIdx];
+    setSelectedId(nextLvl?.equipment[0]?.id ?? null);
+  };
 
   const commitData = (next: SpaceData) => {
     setUndoStack((u) => [...u.slice(-24), draftData]);
@@ -88,12 +99,31 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
   };
 
   const addEquipment = (template: (typeof EQUIPMENT_CATALOG)[number]) => {
+    let cx = 0;
+    let cz = 0;
+    if (level.walls.length > 0) {
+      let minX = Infinity,
+        maxX = -Infinity,
+        minZ = Infinity,
+        maxZ = -Infinity;
+      for (const w of level.walls) {
+        minX = Math.min(minX, w.x1, w.x2);
+        maxX = Math.max(maxX, w.x1, w.x2);
+        minZ = Math.min(minZ, w.z1, w.z2);
+        maxZ = Math.max(maxZ, w.z1, w.z2);
+      }
+      if (Number.isFinite(minX)) {
+        cx = Number(((minX + maxX) / 2).toFixed(2));
+        cz = Number(((minZ + maxZ) / 2).toFixed(2));
+      }
+    }
+    const stagger = (level.equipment.length % 5) * 0.35;
     const newItem: EquipmentItem = {
       id: `eq_${Date.now().toString(36)}`,
       kind: template.kind,
       name: template.name,
-      x: 0,
-      z: 0,
+      x: Number((cx + stagger).toFixed(2)),
+      z: Number((cz + stagger).toFixed(2)),
       elevation: template.elevation ?? 0,
       rotation: 0,
       length: template.length,
@@ -148,7 +178,7 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
             <div className="relative flex-1">
               <select
                 value={activeLevelIdx}
-                onChange={(e) => setActiveLevelIdx(Number(e.target.value))}
+                onChange={(e) => handleLevelChange(Number(e.target.value))}
                 className="w-full appearance-none bg-white border border-[#d6dce3] rounded-md px-2.5 py-1.5 pr-7 text-xs font-medium text-[#1f242c]"
               >
                 {draftData.levels.map((l, idx) => (
@@ -481,6 +511,48 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
                 </div>
 
                 <div className="pt-2 space-y-2 border-t border-[#eef1f5]">
+                  {draftData.levels.length > 1 && (
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Move to level
+                      </label>
+                      <select
+                        value={activeLevelIdx}
+                        onChange={(e) => {
+                          const targetIdx = Number(e.target.value);
+                          if (targetIdx === activeLevelIdx) return;
+                          const itemToMove = selectedItem;
+                          const nextLevels = draftData.levels.map((l, idx) => {
+                            if (idx === activeLevelIdx) {
+                              return {
+                                ...l,
+                                equipment: l.equipment.filter(
+                                  (eq) => eq.id !== itemToMove.id
+                                ),
+                              };
+                            }
+                            if (idx === targetIdx) {
+                              return {
+                                ...l,
+                                equipment: [...l.equipment, itemToMove],
+                              };
+                            }
+                            return l;
+                          });
+                          commitData({ ...draftData, levels: nextLevels });
+                          setActiveLevelIdx(targetIdx);
+                          setSelectedId(itemToMove.id);
+                        }}
+                        className="w-full border border-[#d6dce3] rounded px-2.5 py-1.5 bg-white text-[#1f242c]"
+                      >
+                        {draftData.levels.map((l, idx) => (
+                          <option key={l.id} value={idx}>
+                            {l.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={duplicateSelected}
@@ -505,22 +577,31 @@ export const EquipmentEditor: React.FC<EquipmentEditorProps> = ({
               </div>
             )
           ) : (
-            <div className="grid grid-cols-2 gap-2">
-              {EQUIPMENT_CATALOG.map((item) => (
-                <button
-                  key={item.kind}
-                  type="button"
-                  onClick={() => addEquipment(item)}
-                  className="p-2.5 border border-[#e5e8ec] rounded-md text-left hover:border-[#1f242c] hover:bg-slate-50 transition-colors"
-                >
-                  <div className="font-medium text-[#1f242c] truncate">
-                    {item.name}
-                  </div>
-                  <div className="text-[11px] text-slate-400 tabular-nums mt-0.5">
-                    {item.length}×{item.width}cm
-                  </div>
-                </button>
-              ))}
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={catalogSearch}
+                onChange={(e) => setCatalogSearch(e.target.value)}
+                placeholder="Filter equipment..."
+                className="w-full border border-[#d6dce3] rounded-md px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#1f242c]"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                {filteredCatalog.map((item) => (
+                  <button
+                    key={item.kind}
+                    type="button"
+                    onClick={() => addEquipment(item)}
+                    className="p-2.5 border border-[#e5e8ec] rounded-md text-left hover:border-[#1f242c] hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="font-medium text-[#1f242c] truncate">
+                      {item.name}
+                    </div>
+                    <div className="text-[11px] text-slate-400 tabular-nums mt-0.5">
+                      {item.length}×{item.width}cm
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>

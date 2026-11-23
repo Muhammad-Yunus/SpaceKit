@@ -5,37 +5,51 @@ import type { ProjectRecord, SpaceRecord } from '../types/space.ts';
 
 export const ProjectsView: React.FC<{
   spaces: SpaceRecord[];
+  projects: ProjectRecord[];
+  onProjectsChange: React.Dispatch<React.SetStateAction<ProjectRecord[]>>;
   onOpenSpace: (space: SpaceRecord) => void;
-}> = ({ spaces, onOpenSpace }) => {
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+}> = ({ spaces, projects, onProjectsChange, onOpenSpace }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [environment, setEnvironment] = useState<'production' | 'staging'>('production');
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api
-      .listProjects()
-      .then((res) => setProjects(res.projects))
-      .finally(() => setLoading(false));
-  }, []);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    const res = await api.createProject({
-      name: name.trim(),
-      description: description.trim(),
-      environment,
-    });
-    setProjects((prev) => [res.project, ...prev]);
-    setName('');
-    setDescription('');
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await api.createProject({
+        name: name.trim(),
+        description: description.trim(),
+        environment,
+      });
+      onProjectsChange((prev) => [res.project, ...prev]);
+      setName('');
+      setDescription('');
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to create project.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleDelete = async (id: string) => {
-    await api.deleteProject(id);
-    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setError(null);
+    try {
+      await api.deleteProject(id);
+      onProjectsChange((prev) => prev.filter((p) => p.id !== id));
+      setConfirmDeleteId(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to delete project.'
+      );
+    }
   };
 
   return (
@@ -76,19 +90,22 @@ export const ProjectsView: React.FC<{
           </select>
           <button
             type="submit"
-            className="px-4 py-2 bg-[#1f242c] hover:bg-[#2c333e] text-white rounded-md text-xs font-medium flex items-center gap-1.5"
+            disabled={submitting}
+            className="px-4 py-2 bg-[#1f242c] hover:bg-[#2c333e] text-white rounded-md text-xs font-medium flex items-center gap-1.5 disabled:opacity-50"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>New project</span>
+            <span>{submitting ? 'Creating...' : 'New project'}</span>
           </button>
         </form>
       </div>
 
-      {loading ? (
-        <div className="py-12 text-center text-xs text-slate-400">
-          Loading projects...
+      {error && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-md text-xs text-red-700">
+          {error}
         </div>
-      ) : projects.length === 0 ? (
+      )}
+
+      {projects.length === 0 ? (
         <div className="bg-white border border-[#e5e8ec] rounded-lg p-12 text-center space-y-2">
           <FolderKanban className="w-8 h-8 text-slate-300 mx-auto" />
           <p className="text-sm font-medium text-[#1f242c]">No projects yet</p>
@@ -110,14 +127,33 @@ export const ProjectsView: React.FC<{
                     <h3 className="text-base font-semibold text-[#1f242c]">
                       {p.name}
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(p.id)}
-                      className="text-slate-400 hover:text-red-600 p-1"
-                      title="Delete project"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {confirmDeleteId === p.id ? (
+                      <div className="flex items-center gap-1 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(p.id)}
+                          className="px-2 py-0.5 bg-red-600 text-white rounded font-medium"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-0.5 border border-[#d6dce3] rounded text-slate-600"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(p.id)}
+                        className="text-slate-400 hover:text-red-600 p-1"
+                        title="Delete project"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500">
                     {p.description || 'No project description'}
@@ -161,6 +197,7 @@ export const UsageView: React.FC = () => {
     totalViews: number;
     totalSizeKb: number;
     totalApiRequests: number;
+    totalEntities: number;
     geolocatedSpaces: number;
     spacesBreakdown: Array<{
       id: string;
@@ -171,14 +208,18 @@ export const UsageView: React.FC = () => {
       sizeKb: number;
       levels: number;
       equipmentCount: number;
+      entityCount: number;
     }>;
   } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .getUsage()
       .then((res) => setUsage(res.usage))
-      .catch(() => {});
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : 'Failed to load usage')
+      );
   }, []);
 
   return (
@@ -186,17 +227,21 @@ export const UsageView: React.FC = () => {
       <div className="border-b border-[#e5e8ec] pb-5">
         <h1 className="text-2xl font-semibold text-[#1f242c]">Usage</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Live spatial storage, digitized floor area, viewer impressions, and SDK API consumption from PostgreSQL.
+          Live spatial storage, digitized floor area, viewer impressions, IoT entities, and SDK API consumption from PostgreSQL.
         </p>
       </div>
 
-      {!usage ? (
+      {error ? (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-md text-xs text-red-700">
+          {error}
+        </div>
+      ) : !usage ? (
         <div className="py-12 text-center text-xs text-slate-400">
           Loading usage metrics...
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             {[
               { label: 'Total Spaces', value: usage.totalSpaces, icon: Layers },
               {
@@ -213,6 +258,11 @@ export const UsageView: React.FC = () => {
                 label: 'Geolocated Spaces',
                 value: usage.geolocatedSpaces,
                 icon: MapPin,
+              },
+              {
+                label: 'Spatial Entities',
+                value: usage.totalEntities.toLocaleString(),
+                icon: Activity,
               },
               {
                 label: 'SDK API Requests',
@@ -251,6 +301,7 @@ export const UsageView: React.FC = () => {
                       <th className="py-2.5 px-4 font-medium text-right">Area (sqft)</th>
                       <th className="py-2.5 px-4 font-medium text-right">Levels</th>
                       <th className="py-2.5 px-4 font-medium text-right">Equipment</th>
+                      <th className="py-2.5 px-4 font-medium text-right">Entities</th>
                       <th className="py-2.5 px-4 font-medium text-right">Complexity</th>
                       <th className="py-2.5 px-4 font-medium text-right">Payload</th>
                       <th className="py-2.5 px-4 font-medium text-right">Views</th>
@@ -267,6 +318,7 @@ export const UsageView: React.FC = () => {
                         </td>
                         <td className="py-2.5 px-4 text-right">{s.levels}</td>
                         <td className="py-2.5 px-4 text-right">{s.equipmentCount}</td>
+                        <td className="py-2.5 px-4 text-right">{s.entityCount}</td>
                         <td className="py-2.5 px-4 text-right">{s.complexity}</td>
                         <td className="py-2.5 px-4 text-right">{s.sizeKb} kb</td>
                         <td className="py-2.5 px-4 text-right">

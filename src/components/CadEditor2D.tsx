@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   MousePointer2,
   PenTool,
@@ -20,6 +20,7 @@ import {
   Trash2,
   Maximize2,
   Layers,
+  Tag,
 } from 'lucide-react';
 import type {
   SpaceData,
@@ -27,10 +28,11 @@ import type {
   WallSegment,
   DoorOpening,
   WindowOpening,
+  SpaceAnnotation,
 } from '../types/space.ts';
 import { Space3DViewer } from './Space3DViewer.tsx';
 
-type CadTool = 'select' | 'wall' | 'door' | 'window' | 'pan';
+type CadTool = 'select' | 'wall' | 'door' | 'window' | 'annotation' | 'pan';
 
 interface CadEditor2DProps {
   space: SpaceRecord;
@@ -67,10 +69,12 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
   const [selectedWindowId, setSelectedWindowId] = useState<string | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
 
   // Viewport transform (pixels per meter + pan offset)
   const [pxPerMeter, setPxPerMeter] = useState(34);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [svgSize, setSvgSize] = useState({ width: 800, height: 600 });
 
   // Drawing state
   const [wallStart, setWallStart] = useState<{ x: number; z: number } | null>(null);
@@ -81,12 +85,38 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
     wallId: string;
     endpoint: 'start' | 'end';
   } | null>(null);
+  const nodeDragSnapshotRef = useRef<SpaceData | null>(null);
 
   // History for Undo/Redo
   const [undoStack, setUndoStack] = useState<SpaceData[]>([]);
   const [redoStack, setRedoStack] = useState<SpaceData[]>([]);
 
   const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) {
+        setSvgSize({ width: el.clientWidth, height: el.clientHeight });
+      }
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+
+    const onWheelNative = (e: WheelEvent) => {
+      e.preventDefault();
+      setPxPerMeter((p) =>
+        Math.max(12, Math.min(90, p * (e.deltaY < 0 ? 1.1 : 0.9)))
+      );
+    };
+    el.addEventListener('wheel', onWheelNative, { passive: false });
+    return () => {
+      ro.disconnect();
+      el.removeEventListener('wheel', onWheelNative);
+    };
+  }, []);
 
   const level = draftData.levels[activeLevelIdx] || draftData.levels[0];
 
@@ -227,10 +257,28 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
       return;
     }
 
+    if (tool === 'annotation') {
+      const newAnn: SpaceAnnotation = {
+        id: `ann_${Date.now().toString(36)}`,
+        text: `Zone ${level.annotations.length + 1}`,
+        x: world.x,
+        z: world.z,
+        y: 0.35,
+      };
+      updateLevel((l) => ({ ...l, annotations: [...l.annotations, newAnn] }));
+      setSelectedAnnotationId(newAnn.id);
+      setSelectedWallId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setTool('select');
+      return;
+    }
+
     if (tool === 'select') {
       setSelectedWallId(null);
       setSelectedDoorId(null);
       setSelectedWindowId(null);
+      setSelectedAnnotationId(null);
     }
   };
 
@@ -266,6 +314,11 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
   const handleSvgPointerUp = () => {
     setIsPanning(false);
     if (draggingNode) {
+      if (nodeDragSnapshotRef.current) {
+        setUndoStack((prev) => [...prev.slice(-24), nodeDragSnapshotRef.current!]);
+        setRedoStack([]);
+        nodeDragSnapshotRef.current = null;
+      }
       setDraggingNode(null);
     }
   };
@@ -289,8 +342,20 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
         windows: l.windows.filter((w) => w.id !== selectedWindowId),
       }));
       setSelectedWindowId(null);
+    } else if (selectedAnnotationId) {
+      updateLevel((l) => ({
+        ...l,
+        annotations: l.annotations.filter((a) => a.id !== selectedAnnotationId),
+      }));
+      setSelectedAnnotationId(null);
     }
   };
+
+  const selectedWall = level.walls.find((w) => w.id === selectedWallId) ?? null;
+  const selectedDoor = level.doors.find((d) => d.id === selectedDoorId) ?? null;
+  const selectedWindow = level.windows.find((w) => w.id === selectedWindowId) ?? null;
+  const selectedAnnotation =
+    level.annotations.find((a) => a.id === selectedAnnotationId) ?? null;
 
   const stats = useMemo(() => {
     let minX = Infinity,
@@ -527,11 +592,35 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                 </span>
               </button>
               {expandedGroups.annotations && (
-                <div className="pl-6 space-y-0.5 max-h-28 overflow-y-auto">
+                <div className="pl-6 space-y-0.5 max-h-36 overflow-y-auto">
                   {level.rooms.map((r) => (
-                    <div key={r.id} className="px-2 py-1 text-[11px] text-slate-600 truncate">
-                      {r.name}
+                    <div
+                      key={r.id}
+                      className="px-2 py-1 text-[11px] text-slate-500 truncate flex items-center justify-between"
+                    >
+                      <span className="truncate">{r.name}</span>
+                      <span className="text-[10px] text-slate-400">room</span>
                     </div>
+                  ))}
+                  {level.annotations.map((ann) => (
+                    <button
+                      key={ann.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedAnnotationId(ann.id);
+                        setSelectedWallId(null);
+                        setSelectedDoorId(null);
+                        setSelectedWindowId(null);
+                      }}
+                      className={`w-full text-left px-2 py-1 rounded text-[11px] flex items-center justify-between ${
+                        selectedAnnotationId === ann.id
+                          ? 'bg-amber-50 text-amber-900 font-medium'
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="truncate">{ann.text}</span>
+                      <span className="text-[10px] text-slate-400">label</span>
+                    </button>
                   ))}
                 </div>
               )}
@@ -572,7 +661,7 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
         </div>
 
         {/* Selected element delete quick action */}
-        {(selectedWallId || selectedDoorId || selectedWindowId) && (
+        {(selectedWallId || selectedDoorId || selectedWindowId || selectedAnnotationId) && (
           <div className="absolute top-3 right-4 z-10">
             <button
               type="button"
@@ -590,33 +679,27 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
           onPointerDown={handleSvgPointerDown}
           onPointerMove={handleSvgPointerMove}
           onPointerUp={handleSvgPointerUp}
-          onWheel={(e) => {
-            e.preventDefault();
-            setPxPerMeter((p) =>
-              Math.max(12, Math.min(90, p * (e.deltaY < 0 ? 1.1 : 0.9)))
-            );
-          }}
           className={`w-full h-full ${
             tool === 'pan' || isPanning
               ? 'cursor-grab active:cursor-grabbing'
-              : tool === 'wall' || tool === 'door' || tool === 'window'
+              : tool === 'wall' || tool === 'door' || tool === 'window' || tool === 'annotation'
               ? 'cursor-crosshair'
               : 'cursor-default'
           }`}
         >
           <g
-            transform={`translate(${
-              (svgRef.current?.clientWidth || 800) / 2 + pan.x
-            }, ${(svgRef.current?.clientHeight || 600) / 2 + pan.y})`}
+            transform={`translate(${svgSize.width / 2 + pan.x}, ${
+              svgSize.height / 2 + pan.y
+            })`}
           >
             {/* Optional 2D CAD Image tracing underlay */}
             {level.underlayImageUrl && (
               <image
                 href={level.underlayImageUrl}
-                x={-10 * pxPerMeter}
-                y={-10 * pxPerMeter}
-                width={20 * pxPerMeter}
-                height={20 * pxPerMeter}
+                x={-10 * (level.underlayScale ?? 1) * pxPerMeter}
+                y={-10 * (level.underlayScale ?? 1) * pxPerMeter}
+                width={20 * (level.underlayScale ?? 1) * pxPerMeter}
+                height={20 * (level.underlayScale ?? 1) * pxPerMeter}
                 opacity={level.underlayOpacity ?? 0.25}
                 preserveAspectRatio="xMidYMid meet"
               />
@@ -674,6 +757,7 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                       setSelectedWallId(w.id);
                       setSelectedDoorId(null);
                       setSelectedWindowId(null);
+                      setSelectedAnnotationId(null);
                     }}
                     className="cursor-pointer"
                   />
@@ -688,7 +772,11 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                     onPointerDown={(e) => {
                       if (tool !== 'select') return;
                       e.stopPropagation();
+                      nodeDragSnapshotRef.current = draftData;
                       setSelectedWallId(w.id);
+                      setSelectedDoorId(null);
+                      setSelectedWindowId(null);
+                      setSelectedAnnotationId(null);
                       setDraggingNode({ wallId: w.id, endpoint: 'start' });
                     }}
                     className="cursor-move"
@@ -703,7 +791,11 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                     onPointerDown={(e) => {
                       if (tool !== 'select') return;
                       e.stopPropagation();
+                      nodeDragSnapshotRef.current = draftData;
                       setSelectedWallId(w.id);
+                      setSelectedDoorId(null);
+                      setSelectedWindowId(null);
+                      setSelectedAnnotationId(null);
                       setDraggingNode({ wallId: w.id, endpoint: 'end' });
                     }}
                     className="cursor-move"
@@ -728,6 +820,7 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                     setSelectedWindowId(win.id);
                     setSelectedWallId(null);
                     setSelectedDoorId(null);
+                    setSelectedAnnotationId(null);
                   }}
                   className="cursor-pointer"
                 >
@@ -768,6 +861,7 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                     setSelectedDoorId(d.id);
                     setSelectedWallId(null);
                     setSelectedWindowId(null);
+                    setSelectedAnnotationId(null);
                   }}
                   className="cursor-pointer"
                 >
@@ -783,16 +877,61 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                     x1={-rPx / 2}
                     y1={0}
                     x2={-rPx / 2}
-                    y2={-rPx}
+                    y2={d.swing === 'right' ? rPx : -rPx}
                     stroke={isSel ? '#ea580c' : '#4b5563'}
                     strokeWidth={1.75}
                   />
                   <path
-                    d={`M ${-rPx / 2} ${-rPx} A ${rPx} ${rPx} 0 0 1 ${rPx / 2} 0`}
+                    d={
+                      d.swing === 'right'
+                        ? `M ${-rPx / 2} ${rPx} A ${rPx} ${rPx} 0 0 0 ${rPx / 2} 0`
+                        : `M ${-rPx / 2} ${-rPx} A ${rPx} ${rPx} 0 0 1 ${rPx / 2} 0`
+                    }
                     fill="none"
                     stroke={isSel ? '#ea580c' : '#64748b'}
                     strokeWidth={1.1}
                   />
+                </g>
+              );
+            })}
+
+            {/* Annotation labels */}
+            {level.annotations.map((ann) => {
+              const isSel = selectedAnnotationId === ann.id;
+              return (
+                <g
+                  key={ann.id}
+                  transform={`translate(${ann.x * pxPerMeter}, ${ann.z * pxPerMeter})`}
+                  onClick={(e) => {
+                    if (tool !== 'select') return;
+                    e.stopPropagation();
+                    setSelectedAnnotationId(ann.id);
+                    setSelectedWallId(null);
+                    setSelectedDoorId(null);
+                    setSelectedWindowId(null);
+                  }}
+                  className="cursor-pointer"
+                >
+                  <rect
+                    x={-36}
+                    y={-10}
+                    width={72}
+                    height={20}
+                    rx={4}
+                    fill={isSel ? '#fff7ed' : '#ffffff'}
+                    stroke={isSel ? '#ea580c' : '#cbd5e1'}
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={0}
+                    y={4}
+                    textAnchor="middle"
+                    className={`text-[10px] font-medium select-none ${
+                      isSel ? 'fill-amber-900' : 'fill-slate-700'
+                    }`}
+                  >
+                    {ann.text}
+                  </text>
                 </g>
               );
             })}
@@ -897,6 +1036,21 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
               title="Place window on wall"
             >
               <Square className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTool('annotation');
+                setWallStart(null);
+              }}
+              className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
+                tool === 'annotation'
+                  ? 'bg-[#e8edf2] text-[#1f242c]'
+                  : 'text-slate-500 hover:bg-slate-50'
+              }`}
+              title="Place text annotation label"
+            >
+              <Tag className="w-4 h-4" />
             </button>
             <button
               type="button"
@@ -1013,6 +1167,215 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
             >
               Full preview
             </button>
+
+            {(selectedWall || selectedDoor || selectedWindow || selectedAnnotation) && (
+              <div className="p-3 bg-[#f8fafc] border border-[#e5e8ec] rounded-md space-y-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#1f242c]">
+                    {selectedWall
+                      ? 'Selected Wall'
+                      : selectedDoor
+                      ? 'Selected Door'
+                      : selectedWindow
+                      ? 'Selected Window'
+                      : 'Selected Label'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={deleteSelection}
+                    className="text-red-600 hover:text-red-700 text-[11px] font-medium"
+                  >
+                    Delete
+                  </button>
+                </div>
+
+                {selectedWall && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Height (m)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.5"
+                        value={selectedWall.height}
+                        onChange={(e) => {
+                          const val = Math.max(0.5, Number(e.target.value) || 2.8);
+                          updateLevel((l) => ({
+                            ...l,
+                            walls: l.walls.map((w) =>
+                              w.id === selectedWall.id ? { ...w, height: val } : w
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Thickness (m)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.02"
+                        min="0.05"
+                        value={selectedWall.thickness}
+                        onChange={(e) => {
+                          const val = Math.max(0.05, Number(e.target.value) || 0.18);
+                          updateLevel((l) => ({
+                            ...l,
+                            walls: l.walls.map((w) =>
+                              w.id === selectedWall.id ? { ...w, thickness: val } : w
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {selectedDoor && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Width (m)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.4"
+                        value={selectedDoor.width}
+                        onChange={(e) => {
+                          const val = Math.max(0.4, Number(e.target.value) || 0.9);
+                          updateLevel((l) => ({
+                            ...l,
+                            doors: l.doors.map((d) =>
+                              d.id === selectedDoor.id ? { ...d, width: val } : d
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Swing
+                      </label>
+                      <select
+                        value={selectedDoor.swing || 'left'}
+                        onChange={(e) =>
+                          updateLevel((l) => ({
+                            ...l,
+                            doors: l.doors.map((d) =>
+                              d.id === selectedDoor.id
+                                ? { ...d, swing: e.target.value as 'left' | 'right' }
+                                : d
+                            ),
+                          }))
+                        }
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1"
+                      >
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {selectedWindow && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Width
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.3"
+                        value={selectedWindow.width}
+                        onChange={(e) => {
+                          const val = Math.max(0.3, Number(e.target.value) || 1.6);
+                          updateLevel((l) => ({
+                            ...l,
+                            windows: l.windows.map((w) =>
+                              w.id === selectedWindow.id ? { ...w, width: val } : w
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Height
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.3"
+                        value={selectedWindow.height}
+                        onChange={(e) => {
+                          const val = Math.max(0.3, Number(e.target.value) || 1.4);
+                          updateLevel((l) => ({
+                            ...l,
+                            windows: l.windows.map((w) =>
+                              w.id === selectedWindow.id ? { ...w, height: val } : w
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Sill (m)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={selectedWindow.sillHeight}
+                        onChange={(e) => {
+                          const val = Math.max(0, Number(e.target.value) || 0.85);
+                          updateLevel((l) => ({
+                            ...l,
+                            windows: l.windows.map((w) =>
+                              w.id === selectedWindow.id ? { ...w, sillHeight: val } : w
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1 tabular-nums"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {selectedAnnotation && (
+                  <div className="space-y-2">
+                    <label className="block text-[11px] text-slate-500">
+                      Label text
+                    </label>
+                    <input
+                      type="text"
+                      value={selectedAnnotation.text}
+                      onChange={(e) =>
+                        updateLevel((l) => ({
+                          ...l,
+                          annotations: l.annotations.map((a) =>
+                            a.id === selectedAnnotation.id
+                              ? { ...a, text: e.target.value }
+                              : a
+                          ),
+                        }))
+                      }
+                      className="w-full bg-white border border-[#d6dce3] rounded px-2 py-1"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {rightTab === 'settings' && (
               <>
@@ -1155,10 +1518,10 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
             )}
 
             {rightTab === 'advanced' && (
-              <div className="space-y-3 text-xs text-slate-600">
+              <div className="space-y-4 text-xs text-slate-600">
                 <p>
                   Upload a 2D CAD floor plan image to automatically re-digitize
-                  walls, doors, windows, and equipment using Gemini Vision AI.
+                  walls, doors, windows, and equipment using Agentic Vision AI.
                 </p>
                 <button
                   type="button"
@@ -1167,6 +1530,70 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
                 >
                   Import 2D CAD Image
                 </button>
+
+                {level.underlayImageUrl && (
+                  <div className="pt-3 border-t border-[#eef1f5] space-y-3">
+                    <div className="font-semibold text-[#1f242c]">
+                      2D CAD Underlay Tracing
+                    </div>
+                    <div>
+                      <div className="flex justify-between mb-1">
+                        <span>Opacity</span>
+                        <span className="tabular-nums">
+                          {Math.round((level.underlayOpacity ?? 0.25) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={level.underlayOpacity ?? 0.25}
+                        onChange={(e) =>
+                          updateLevel((l) => ({
+                            ...l,
+                            underlayOpacity: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-[#1f242c]"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between mb-1">
+                        <span>Underlay scale</span>
+                        <span className="tabular-nums">
+                          {(level.underlayScale ?? 1).toFixed(2)}×
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.4}
+                        max={2.5}
+                        step={0.05}
+                        value={level.underlayScale ?? 1}
+                        onChange={(e) =>
+                          updateLevel((l) => ({
+                            ...l,
+                            underlayScale: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-[#1f242c]"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateLevel((l) => ({
+                          ...l,
+                          underlayImageUrl: undefined,
+                        }))
+                      }
+                      className="w-full py-1.5 px-3 border border-red-200 text-red-600 rounded-md font-medium hover:bg-red-50"
+                    >
+                      Remove CAD underlay
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

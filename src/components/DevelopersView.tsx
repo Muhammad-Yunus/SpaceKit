@@ -23,16 +23,20 @@ export const DevelopersView: React.FC<DevelopersViewProps> = ({ spaces }) => {
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>(
     spaces[0]?.id ?? ''
   );
-  const [endpointMode, setEndpointMode] = useState<'space' | 'geo'>('space');
+  const [endpointMode, setEndpointMode] = useState<'space' | 'geo' | 'entities'>('space');
   const [apiResponse, setApiResponse] = useState<string>('');
   const [testing, setTesting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .listKeys()
       .then((res) => setKeys(res.keys))
-      .catch(() => {});
+      .catch((err) =>
+        setKeyError(err instanceof Error ? err.message : 'Failed to load API keys')
+      );
   }, []);
 
   useEffect(() => {
@@ -44,15 +48,26 @@ export const DevelopersView: React.FC<DevelopersViewProps> = ({ spaces }) => {
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKeyName.trim()) return;
-    const res = await api.createKey(newKeyName.trim());
-    setKeys((prev) => [res.key, ...prev]);
-    setRevealedKey(res.rawKey);
-    setNewKeyName('');
+    setKeyError(null);
+    try {
+      const res = await api.createKey(newKeyName.trim());
+      setKeys((prev) => [res.key, ...prev]);
+      setRevealedKey(res.rawKey);
+      setNewKeyName('');
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Failed to create key');
+    }
   };
 
   const handleRevoke = async (id: string) => {
-    await api.deleteKey(id);
-    setKeys((prev) => prev.filter((k) => k.id !== id));
+    setKeyError(null);
+    try {
+      await api.deleteKey(id);
+      setKeys((prev) => prev.filter((k) => k.id !== id));
+      setConfirmRevokeId(null);
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Failed to revoke key');
+    }
   };
 
   const handleCopy = (text: string, id: string) => {
@@ -68,7 +83,9 @@ export const DevelopersView: React.FC<DevelopersViewProps> = ({ spaces }) => {
       const data =
         endpointMode === 'space'
           ? await api.testSdkSpace(selectedSpaceId, revealedKey || undefined)
-          : await api.testSdkGeo(selectedSpaceId, revealedKey || undefined);
+          : endpointMode === 'geo'
+          ? await api.testSdkGeo(selectedSpaceId, revealedKey || undefined)
+          : await api.testSdkEntities(selectedSpaceId, revealedKey || undefined);
       setApiResponse(JSON.stringify(data, null, 2));
     } catch (err) {
       setApiResponse(
@@ -162,6 +179,12 @@ await space.startViewer({
           </div>
         )}
 
+        {keyError && (
+          <div className="p-2.5 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+            {keyError}
+          </div>
+        )}
+
         {keys.length === 0 ? (
           <p className="text-xs text-slate-500 py-4">
             No API keys yet. Create a key above to authenticate external SDK and REST requests.
@@ -190,14 +213,33 @@ await space.startViewer({
                       {new Date(k.createdAt).toLocaleDateString()}
                     </td>
                     <td className="py-2.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => handleRevoke(k.id)}
-                        className="text-red-600 hover:text-red-800 inline-flex items-center gap-1"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Revoke</span>
-                      </button>
+                      {confirmRevokeId === k.id ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleRevoke(k.id)}
+                            className="px-2 py-0.5 bg-red-600 text-white rounded text-[11px] font-medium"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRevokeId(null)}
+                            className="px-2 py-0.5 border border-[#d6dce3] rounded text-[11px] text-slate-600"
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRevokeId(k.id)}
+                          className="text-red-600 hover:text-red-800 inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Revoke</span>
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -276,12 +318,13 @@ await space.startViewer({
             <select
               value={endpointMode}
               onChange={(e) =>
-                setEndpointMode(e.target.value as 'space' | 'geo')
+                setEndpointMode(e.target.value as 'space' | 'geo' | 'entities')
               }
               className="border border-[#d6dce3] rounded-md px-2.5 py-1.5 font-mono"
             >
               <option value="space">GET /api/v1/spaces/:id</option>
               <option value="geo">GET /api/v1/spaces/:id/geo</option>
+              <option value="entities">GET /api/v1/spaces/:id/entities</option>
             </select>
           </div>
 

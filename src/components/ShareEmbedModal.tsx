@@ -49,6 +49,38 @@ export const ShareEmbedModal: React.FC<ShareEmbedModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4 text-xs">
+          {space.status !== 'live' && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900">
+              This space is currently set to <strong>Draft</strong>. Publish it or set status to <strong>Live</strong> in Settings so public embed URLs load cleanly.
+            </div>
+          )}
+
+          <div>
+            <label className="font-medium text-[#1f242c] flex items-center gap-1.5 mb-1.5">
+              <Globe className="w-3.5 h-3.5 text-slate-500" />
+              <span>Public Interactive 3D Viewer URL</span>
+            </label>
+            <div className="flex gap-2">
+              <input
+                readOnly
+                value={`${shareUrl}&embed=1`}
+                className="flex-1 bg-[#f4f6f9] border border-[#d6dce3] rounded-md px-3 py-2 font-mono text-[11px] text-[#1f242c]"
+              />
+              <button
+                type="button"
+                onClick={() => copy(`${shareUrl}&embed=1`, 'shareurl')}
+                className="px-3 py-2 border border-[#d6dce3] rounded-md font-medium hover:bg-slate-50 flex items-center gap-1"
+              >
+                {copied === 'shareurl' ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span>{copied === 'shareurl' ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+          </div>
+
           <div>
             <label className="font-medium text-[#1f242c] flex items-center gap-1.5 mb-1.5">
               <LinkIcon className="w-3.5 h-3.5 text-slate-500" />

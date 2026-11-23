@@ -576,50 +576,79 @@ export function buildSpaceScene(
     levelGroup.name = `level:${level.id}`;
     levelGroup.position.y = level.elevation || lvlIdx * 3.0;
 
-    // Floor slab bounding box
-    let minX = Infinity,
-      maxX = -Infinity,
-      minZ = Infinity,
-      maxZ = -Infinity;
-    for (const w of level.walls) {
-      minX = Math.min(minX, w.x1, w.x2);
-      maxX = Math.max(maxX, w.x1, w.x2);
-      minZ = Math.min(minZ, w.z1, w.z2);
-      maxZ = Math.max(maxZ, w.z1, w.z2);
+    const validRooms = level.rooms.filter((r) => r.polygon.length >= 3);
+
+    // Floor slab bounding box fallback only when no room polygons exist
+    if (validRooms.length === 0) {
+      let minX = Infinity,
+        maxX = -Infinity,
+        minZ = Infinity,
+        maxZ = -Infinity;
+      for (const w of level.walls) {
+        minX = Math.min(minX, w.x1, w.x2);
+        maxX = Math.max(maxX, w.x1, w.x2);
+        minZ = Math.min(minZ, w.z1, w.z2);
+        maxZ = Math.max(maxZ, w.z1, w.z2);
+      }
+
+      if (Number.isFinite(minX) && maxX > minX && maxZ > minZ) {
+        const slabW = maxX - minX + 0.3;
+        const slabD = maxZ - minZ + 0.3;
+        const slab = new THREE.Mesh(
+          new THREE.BoxGeometry(slabW, 0.14, slabD),
+          slabMat
+        );
+        slab.position.set((minX + maxX) / 2, -0.07, (minZ + maxZ) / 2);
+        slab.receiveShadow = true;
+        levelGroup.add(slab);
+      }
     }
 
-    if (Number.isFinite(minX) && maxX > minX && maxZ > minZ) {
-      const slabW = maxX - minX + 0.3;
-      const slabD = maxZ - minZ + 0.3;
-      const slab = new THREE.Mesh(
-        new THREE.BoxGeometry(slabW, 0.14, slabD),
-        slabMat
-      );
-      slab.position.set((minX + maxX) / 2, -0.07, (minZ + maxZ) / 2);
-      slab.receiveShadow = true;
-      levelGroup.add(slab);
-    }
-
-    // Room floor zones
-    for (const room of level.rooms) {
-      if (room.polygon.length < 3) continue;
+    // Room floor zones + structural sub-slab matching exact polygon footprint
+    for (const room of validRooms) {
       const shape = new THREE.Shape();
       room.polygon.forEach((pt, idx) => {
         if (idx === 0) shape.moveTo(pt.x, -pt.z);
         else shape.lineTo(pt.x, -pt.z);
       });
       shape.closePath();
+
+      const subSlabGeo = new THREE.ExtrudeGeometry(shape, {
+        depth: 0.14,
+        bevelEnabled: false,
+      });
+      subSlabGeo.rotateX(-Math.PI / 2);
+      const subSlab = new THREE.Mesh(subSlabGeo, slabMat);
+      subSlab.position.y = -0.14;
+      subSlab.receiveShadow = true;
+      levelGroup.add(subSlab);
+
       const geo = new THREE.ShapeGeometry(shape);
       geo.rotateX(-Math.PI / 2);
-      const mat = floorMaterials[room.floorType || 'concrete'] || floorMaterials.concrete;
+      const mat =
+        floorMaterials[room.floorType || 'concrete'] || floorMaterials.concrete;
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.y = 0.015;
+      mesh.position.y = 0.008;
       mesh.receiveShadow = true;
       levelGroup.add(mesh);
     }
 
     // Walls with door & window cutouts
+    const claimedDoorIds = new Set<string>();
     for (const wall of level.walls) {
+      for (const d of level.doors) {
+        const { dist, t } = pointToSegmentDist(
+          d.x,
+          d.z,
+          wall.x1,
+          wall.z1,
+          wall.x2,
+          wall.z2
+        );
+        if (dist <= wall.thickness + 0.35 && t > 0.02 && t < 0.98) {
+          claimedDoorIds.add(d.id);
+        }
+      }
       const wGroup = buildWallWithOpenings(
         wall,
         level.doors,
@@ -630,6 +659,44 @@ export function buildSpaceScene(
         doorLeafMat
       );
       levelGroup.add(wGroup);
+    }
+
+    // Render architectural door frame + ajar door leaf for doors placed inside open CAD wall gaps
+    const defaultWallH = level.floorHeight || data.settings.wallHeight || 2.8;
+    const defaultWallT = data.settings.wallThickness || 0.16;
+    for (const d of level.doors) {
+      if (claimedDoorIds.has(d.id)) continue;
+      const gapDoorGroup = new THREE.Group();
+      gapDoorGroup.position.set(d.x, 0, d.z);
+      gapDoorGroup.rotation.y = (-d.angle * Math.PI) / 180;
+
+      const opW = Math.max(0.55, d.width);
+      const opH = Math.min(defaultWallH - 0.1, d.height || 2.1);
+      const lintelH = defaultWallH - opH;
+      if (lintelH > 0.04) {
+        const lintel = new THREE.Mesh(
+          new THREE.BoxGeometry(opW, lintelH, defaultWallT),
+          wallMat
+        );
+        lintel.position.set(0, opH + lintelH / 2, 0);
+        lintel.castShadow = true;
+        lintel.receiveShadow = true;
+        gapDoorGroup.add(lintel);
+      }
+
+      const leafPivot = new THREE.Group();
+      leafPivot.position.set(-opW / 2 + 0.02, 0, 0);
+      leafPivot.rotation.y = d.swing === 'right' ? -0.42 : 0.42;
+      const leaf = new THREE.Mesh(
+        new THREE.BoxGeometry(opW - 0.04, opH - 0.02, 0.045),
+        doorLeafMat
+      );
+      leaf.position.set((opW - 0.04) / 2, opH / 2, 0);
+      leaf.castShadow = true;
+      leafPivot.add(leaf);
+      gapDoorGroup.add(leafPivot);
+
+      levelGroup.add(gapDoorGroup);
     }
 
     // Equipment 3D groups + invisible raycast hitbox

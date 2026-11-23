@@ -693,17 +693,27 @@ export const CadEditor2D: React.FC<CadEditor2DProps> = ({
             })`}
           >
             {/* Optional 2D CAD Image tracing underlay */}
-            {level.underlayImageUrl && (
-              <image
-                href={level.underlayImageUrl}
-                x={-10 * (level.underlayScale ?? 1) * pxPerMeter}
-                y={-10 * (level.underlayScale ?? 1) * pxPerMeter}
-                width={20 * (level.underlayScale ?? 1) * pxPerMeter}
-                height={20 * (level.underlayScale ?? 1) * pxPerMeter}
-                opacity={level.underlayOpacity ?? 0.25}
-                preserveAspectRatio="xMidYMid meet"
-              />
-            )}
+            {level.underlayImageUrl &&
+              (() => {
+                const s = level.underlayScale ?? 1;
+                const wM = (level.underlayWidthMeters ?? 20) * s;
+                const hM = (level.underlayHeightMeters ?? 20) * s;
+                const offX = (level.underlayOffsetX ?? 0) * s;
+                const offZ = (level.underlayOffsetZ ?? 0) * s;
+                return (
+                  <image
+                    href={level.underlayImageUrl}
+                    x={(-wM / 2 + offX) * pxPerMeter}
+                    y={(-hM / 2 + offZ) * pxPerMeter}
+                    width={wM * pxPerMeter}
+                    height={hM * pxPerMeter}
+                    opacity={level.underlayOpacity ?? 0.28}
+                    preserveAspectRatio={
+                      level.underlayWidthMeters ? 'none' : 'xMidYMid meet'
+                    }
+                  />
+                );
+              })()}
 
             {/* Room zones */}
             {level.rooms.map((room) => {

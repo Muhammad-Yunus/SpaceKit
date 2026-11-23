@@ -109,6 +109,10 @@ export interface SpaceLevel {
   underlayImageUrl?: string;
   underlayOpacity?: number;
   underlayScale?: number;
+  underlayWidthMeters?: number;
+  underlayHeightMeters?: number;
+  underlayOffsetX?: number;
+  underlayOffsetZ?: number;
 }
 
 export interface LayoutSettings {

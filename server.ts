@@ -1479,11 +1479,28 @@ async function startServer() {
         let appliedUpdate = false;
 
         if (aiResult.shouldUpdateSpace && aiResult.updatedSpaceData && !currentSpace.locked) {
+          const nextLvl0 = aiResult.updatedSpaceData.levels[0];
+          const prevLvl0 = activeData.levels[0];
+          if (nextLvl0) {
+            if (imageDataUrl) {
+              nextLvl0.underlayImageUrl = imageDataUrl;
+              nextLvl0.underlayOpacity = 0.28;
+            } else if (prevLvl0?.underlayImageUrl) {
+              nextLvl0.underlayImageUrl = prevLvl0.underlayImageUrl;
+              nextLvl0.underlayOpacity = prevLvl0.underlayOpacity ?? 0.28;
+              nextLvl0.underlayScale = prevLvl0.underlayScale ?? 1;
+              nextLvl0.underlayWidthMeters = prevLvl0.underlayWidthMeters;
+              nextLvl0.underlayHeightMeters = prevLvl0.underlayHeightMeters;
+              nextLvl0.underlayOffsetX = prevLvl0.underlayOffsetX;
+              nextLvl0.underlayOffsetZ = prevLvl0.underlayOffsetZ;
+            }
+          }
           const metrics = computeSpaceMetrics(aiResult.updatedSpaceData);
           const [savedSpace] = await db
             .update(spaces)
             .set({
               unpublishedData: aiResult.updatedSpaceData,
+              ...(imageDataUrl ? { sourceCadImageUrl: imageDataUrl } : {}),
               sqft: aiResult.estimatedSqft || metrics.sqft,
               complexity: metrics.complexity,
               sizeKb: metrics.sizeKb,

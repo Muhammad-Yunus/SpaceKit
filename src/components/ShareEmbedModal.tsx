@@ -16,7 +16,12 @@ export const ShareEmbedModal: React.FC<ShareEmbedModalProps> = ({
   const [copied, setCopied] = useState<string | null>(null);
   if (!open) return null;
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const origin =
+    typeof window !== 'undefined'
+      ? window.location.origin && window.location.origin !== 'null'
+        ? window.location.origin
+        : `${window.location.protocol}//${window.location.host}`
+      : '';
   const shareUrl = `${origin}/?space=${encodeURIComponent(space.id)}`;
   const iframeCode = `<iframe\n  src="${shareUrl}&embed=1"\n  width="100%"\n  height="540"\n  style="border:0;border-radius:8px;"\n  allowfullscreen\n></iframe>`;
   const sdkCode = `// Install: npm install ${origin}/sdk/spacekit-sdk-1.0.0.tgz
@@ -126,7 +131,7 @@ await space.startViewer({ containerId: 'spacekit-3d', mode: '3d', showAnnotation
               </span>
               <div className="flex items-center gap-3">
                 <a
-                  href="/sdk/spacekit-sdk-1.0.0.tgz"
+                  href={`${origin}/sdk/spacekit-sdk-1.0.0.tgz`}
                   download="spacekit-sdk-1.0.0.tgz"
                   className="text-slate-600 hover:text-[#1f242c] font-medium flex items-center gap-1"
                 >

@@ -189,7 +189,22 @@ export const DevelopersView: React.FC<DevelopersViewProps> = ({ spaces }) => {
     }
   };
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const [origin, setOrigin] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return window.location.origin && window.location.origin !== 'null'
+      ? window.location.origin
+      : `${window.location.protocol}//${window.location.host}`;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const liveOrigin =
+      window.location.origin && window.location.origin !== 'null'
+        ? window.location.origin
+        : `${window.location.protocol}//${window.location.host}`;
+    setOrigin(liveOrigin);
+  }, []);
+
   const activeDisplayKey = sandboxApiKey.trim() || revealedKey || 'sk_live_your_api_key';
 
   const npmSnippet = `// 1. Download spacekit-sdk-1.0.0.tgz and run:
@@ -242,7 +257,7 @@ const viewer = await space.startViewer({
 
         <div className="flex flex-wrap items-center gap-2">
           <a
-            href="/sdk/spacekit-sdk-1.0.0.tgz"
+            href={`${origin}/sdk/spacekit-sdk-1.0.0.tgz`}
             download="spacekit-sdk-1.0.0.tgz"
             className="px-3.5 py-2 bg-[#1f242c] hover:bg-[#2c333e] text-white rounded-md text-xs font-medium inline-flex items-center gap-1.5"
           >
@@ -250,7 +265,7 @@ const viewer = await space.startViewer({
             <span>Download @spacekit/sdk (.tgz)</span>
           </a>
           <a
-            href="/sdk/spacekit-sdk.d.ts"
+            href={`${origin}/sdk/spacekit-sdk.d.ts`}
             target="_blank"
             rel="noreferrer"
             className="px-3 py-2 bg-white border border-[#d6dce3] hover:bg-slate-50 text-[#1f242c] rounded-md text-xs font-medium inline-flex items-center gap-1.5"
@@ -263,11 +278,18 @@ const viewer = await space.startViewer({
 
       {/* SDK Distribution & Package Install Banner */}
       <section className="bg-white border border-[#e5e8ec] rounded-lg p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <Package className="w-4 h-4 text-[#1f242c]" />
-          <h2 className="text-sm font-semibold text-[#1f242c]">
-            SDK Package Distribution (<code className="font-mono text-xs">@spacekit/sdk@1.0.0</code>)
-          </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Package className="w-4 h-4 text-[#1f242c]" />
+            <h2 className="text-sm font-semibold text-[#1f242c]">
+              SDK Package Distribution (<code className="font-mono text-xs">@spacekit/sdk@1.0.0</code>)
+            </h2>
+          </div>
+          {origin && (
+            <span className="text-[11px] font-mono text-slate-500">
+              Active Host: <span className="text-[#1f242c]">{origin}</span>
+            </span>
+          )}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           <div className="bg-[#f4f6f9] border border-[#e5e8ec] rounded-md p-3.5 space-y-2">
@@ -278,7 +300,7 @@ const viewer = await space.startViewer({
               Download <code className="font-mono">spacekit-sdk-1.0.0.tgz</code> and install directly in any React, Vite, Next.js, or Node.js project:
             </p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 bg-[#1a1f26] text-slate-100 rounded px-2.5 py-1.5 font-mono text-[11px] overflow-x-auto whitespace-nowrap">
+              <code className="flex-1 bg-[#1a1f26] text-slate-100 rounded px-2.5 py-1.5 font-mono text-[11px] break-all select-all">
                 npm install {origin}/sdk/spacekit-sdk-1.0.0.tgz
               </code>
               <button
@@ -309,7 +331,7 @@ const viewer = await space.startViewer({
               Import directly in any browser without a build step. CORS headers are enabled on all <code className="font-mono">/api/v1/*</code> and <code className="font-mono">/sdk/*</code> routes:
             </p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 bg-[#1a1f26] text-slate-100 rounded px-2.5 py-1.5 font-mono text-[11px] overflow-x-auto whitespace-nowrap">
+              <code className="flex-1 bg-[#1a1f26] text-slate-100 rounded px-2.5 py-1.5 font-mono text-[11px] break-all select-all">
                 {origin}/sdk/spacekit-sdk.js
               </code>
               <button
